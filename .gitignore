@@ -35,3 +35,6 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# Generated NFS manifest (contains real host/path from Terraform)
+manifests/nfs-pv.yaml

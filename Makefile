@@ -35,6 +35,7 @@ prereqs/install: ## Install cert-manager, prometheus, metrics-server
 	helm repo update
 	helm upgrade --install cert-manager jetstack/cert-manager \
 		--set crds.enabled=true \
+		--values helm/prerequisites/cert-manager-values.yaml \
 		--namespace cert-manager --create-namespace \
 		--wait
 	helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
@@ -63,26 +64,27 @@ prereqs/uninstall: ## Uninstall all prerequisites
 # ── NFS (PV/PVC from Managed NFS) ────────────────────────────────────────────
 
 .PHONY: nfs/configure
-nfs/configure: ## Generate PV/PVC manifests from Terraform output and apply
+nfs/configure: ## Generate NFS PV from template, create namespace, apply PV + PVC
 	@NFS_HOST=$$($(TF) output -raw nfs_host) && \
 	NFS_PATH=$$($(TF) output -raw nfs_mount_path) && \
-	mkdir -p manifests && \
 	sed "s|__NFS_HOST__|$$NFS_HOST|g; s|__NFS_PATH__|$$NFS_PATH|g" \
-		manifests/nfs-pv-pvc.yaml.tpl > manifests/nfs-pv-pvc.yaml && \
-	kubectl apply -f manifests/nfs-pv-pvc.yaml
+		manifests/nfs-pv.yaml.tpl > manifests/nfs-pv.yaml && \
+	kubectl apply -f manifests/slurm-namespace.yaml && \
+	kubectl apply -f manifests/nfs-pv.yaml && \
+	kubectl apply -f manifests/nfs-pvc.yaml
 
 .PHONY: nfs/test
 nfs/test: ## Deploy busybox pod to verify NFS read/write
 	@echo "Deploying NFS test pod..."
 	kubectl apply -f manifests/nfs-test-pod.yaml
 	@echo "Waiting for pod to be ready..."
-	kubectl wait --for=condition=Ready pod/nfs-test --timeout=60s
+	kubectl wait --for=condition=Ready pod/nfs-test -n slurm --timeout=60s
 	@echo "Testing write..."
-	kubectl exec nfs-test -- sh -c 'echo "NFS test $$(date)" > /mnt/nfs/test-file.txt'
+	kubectl exec nfs-test -n slurm -- sh -c 'echo "NFS test $$(date)" > /mnt/nfs/test-file.txt'
 	@echo "Testing read..."
-	kubectl exec nfs-test -- cat /mnt/nfs/test-file.txt
+	kubectl exec nfs-test -n slurm -- cat /mnt/nfs/test-file.txt
 	@echo "Cleaning up..."
-	kubectl delete pod nfs-test --ignore-not-found
+	kubectl delete pod nfs-test -n slurm --ignore-not-found
 
 .PHONY: nfs/status
 nfs/status: ## Check PV/PVC binding status
