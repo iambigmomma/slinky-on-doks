@@ -1,0 +1,114 @@
+# Slurm Cluster on DOKS — Phase 3 values
+
+# ── Controller (slurmctld) ───────────────────────────────────────────────────
+controller:
+  persistence:
+    enabled: true
+    # null = use default StorageClass (do-block-storage, RWO)
+    storageClassName: null
+  extraConfMap:
+    ReturnToService: 2
+  podSpec:
+    nodeSelector:
+      kubernetes.io/os: linux
+      doks.digitalocean.com/node-pool: mgmt
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      labels:
+        release: prometheus
+      interval: 30s
+      scrapeTimeout: 25s
+
+# ── REST API (slurmrestd) ───────────────────────────────────────────────────
+restapi:
+  replicas: 1
+  podSpec:
+    nodeSelector:
+      kubernetes.io/os: linux
+      doks.digitalocean.com/node-pool: mgmt
+
+# ── Accounting (slurmdbd) ───────────────────────────────────────────────────
+accounting:
+  enabled: true
+  storageConfig:
+    host: private-slinky-poc-mysql-do-user-2633050-0.d.db.ondigitalocean.com
+    port: 25060
+    database: slurm_acct
+    username: slurm
+    passwordKeyRef:
+      name: slurm-db-password
+      key: password
+  podSpec:
+    nodeSelector:
+      kubernetes.io/os: linux
+      doks.digitalocean.com/node-pool: mgmt
+
+# ── Login Nodes ──────────────────────────────────────────────────────────────
+loginsets:
+  slinky:
+    enabled: true
+    replicas: 1
+    login:
+      volumeMounts:
+        - name: shared-nfs
+          mountPath: /shared
+    rootSshAuthorizedKeys: null
+    podSpec:
+      nodeSelector:
+        kubernetes.io/os: linux
+        doks.digitalocean.com/node-pool: mgmt
+      volumes:
+        - name: shared-nfs
+          persistentVolumeClaim:
+            claimName: slurm-nfs-pvc
+    service:
+      spec:
+        type: ClusterIP
+
+# ── Compute Nodes ────────────────────────────────────────────────────────────
+nodesets:
+  slinky:
+    enabled: true
+    replicas: 4
+    slurmd:
+      resources:
+        requests:
+          cpu: 3
+          memory: 5Gi
+        limits:
+          cpu: 3
+          memory: 5Gi
+      volumeMounts:
+        - name: shared-nfs
+          mountPath: /shared
+    useResourceLimits: true
+    partition:
+      enabled: true
+      configMap:
+        State: UP
+        MaxTime: UNLIMITED
+    podSpec:
+      nodeSelector:
+        kubernetes.io/os: linux
+        doks.digitalocean.com/node-pool: compute
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      volumes:
+        - name: shared-nfs
+          persistentVolumeClaim:
+            claimName: slurm-nfs-pvc
+
+# ── Partitions ───────────────────────────────────────────────────────────────
+partitions:
+  all:
+    enabled: true
+    nodesets:
+      - ALL
+    configMap:
+      State: UP
+      Default: "YES"
+      MaxTime: UNLIMITED

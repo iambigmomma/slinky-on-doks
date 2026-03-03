@@ -96,6 +96,14 @@ nfs/status: ## Check PV/PVC binding status
 
 # ── Slinky / Slurm ──────────────────────────────────────────────────────────
 
+.PHONY: slinky/create-db-secret
+slinky/create-db-secret: ## Create Slurm DB password secret from Terraform output
+	@DB_PASS=$$($(TF) output -raw db_password) && \
+	kubectl create secret generic slurm-db-password \
+		--namespace slurm \
+		--from-literal=password="$$DB_PASS" \
+		--dry-run=client -o yaml | kubectl apply -f -
+
 .PHONY: slinky/install-operator
 slinky/install-operator: ## Install slurm-operator CRDs and operator
 	helm upgrade --install slurm-operator-crds \
@@ -109,7 +117,7 @@ slinky/install-operator: ## Install slurm-operator CRDs and operator
 		--wait
 
 .PHONY: slinky/install-slurm
-slinky/install-slurm: ## Install Slurm cluster
+slinky/install-slurm: slinky/create-db-secret ## Install Slurm cluster
 	helm upgrade --install slurm \
 		oci://ghcr.io/slinkyproject/charts/slurm \
 		--values helm/slinky/values-slurm.yaml \
@@ -133,7 +141,7 @@ slinky/status: ## Show pods across slinky + slurm namespaces
 	kubectl get pods -n slurm
 	@echo ""
 	@echo "=== Slurm Node Status ==="
-	-kubectl exec -n slurm deploy/slurm-login -- sinfo 2>/dev/null || echo "(login pod not ready)"
+	-kubectl exec -n slurm deploy/slurm-login-slinky -- sinfo 2>/dev/null || echo "(login pod not ready)"
 
 .PHONY: slinky/uninstall
 slinky/uninstall: ## Uninstall Slurm cluster, operator, CRDs
@@ -155,18 +163,18 @@ slinky/logs: ## Tail operator and controller logs
 
 .PHONY: slurm/shell
 slurm/shell: ## Interactive shell on the login pod
-	kubectl exec -it -n slurm deploy/slurm-login -- /bin/bash
+	kubectl exec -it -n slurm deploy/slurm-login-slinky -- /bin/bash
 
 .PHONY: slurm/info
 slurm/info: ## Run sinfo, squeue, and show partitions
 	@echo "=== sinfo ==="
-	kubectl exec -n slurm deploy/slurm-login -- sinfo
+	kubectl exec -n slurm deploy/slurm-login-slinky -- sinfo
 	@echo ""
 	@echo "=== squeue ==="
-	kubectl exec -n slurm deploy/slurm-login -- squeue
+	kubectl exec -n slurm deploy/slurm-login-slinky -- squeue
 	@echo ""
 	@echo "=== partitions ==="
-	kubectl exec -n slurm deploy/slurm-login -- scontrol show partitions
+	kubectl exec -n slurm deploy/slurm-login-slinky -- scontrol show partitions
 
 .PHONY: slurm/submit-test
 slurm/submit-test: ## Copy job scripts to NFS and submit basic test jobs
@@ -195,7 +203,7 @@ obs/prometheus: ## Port-forward Prometheus to localhost:9090
 # ── Lifecycle / Compound Targets ──────────────────────────────────────────────
 
 .PHONY: up
-up: infra/apply prereqs/install nfs/configure slinky/install-operator slinky/install-slurm ## Full deploy: infra -> prereqs -> nfs -> slinky
+up: infra/apply prereqs/install nfs/configure slinky/install-operator slinky/create-db-secret slinky/install-slurm ## Full deploy: infra -> prereqs -> nfs -> slinky
 
 .PHONY: down
 down: slinky/uninstall prereqs/uninstall infra/destroy ## Full teardown: slinky -> prereqs -> infra
