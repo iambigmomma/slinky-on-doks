@@ -10,16 +10,16 @@ Create the following DigitalOcean resources before installing any Helm charts.
 
 ### VPC
 
-Create a VPC in a region that supports managed NFS such as **atl1**.
+[Create a VPC](https://docs.digitalocean.com/products/networking/vpc/how-to/create/) in a region that supports managed NFS such as **atl1**.
 
 ### DOKS Cluster
 
-Create a Kubernetes cluster in the same VPC with two node pools:
+[Create a Kubernetes cluster](https://docs.digitalocean.com/products/kubernetes/how-to/create-clusters/) in the same VPC with two node pools:
 
 | Pool | Purpose | Suggested size | Count |
 |------|---------|---------------|-------|
-| **mgmt** | Slurm control plane, operator, monitoring, login nodes | General-purpose 4 vCPU / 8 GiB | 3 |
-| **gpu** | Slurm worker nodes (training jobs) | GPU Droplets (e.g., H200, Mi325x) | 4+ |
+| **mgmt** | Slurm control plane, operator, monitoring, login nodes | CPU Optimized 4 vCPU / 8 GiB | 3 |
+| **gpu** | Slurm worker nodes (training jobs) | GPU Droplets (e.g., H200, Mi325x) | 2+ |
 
 ### GPU Node Taints and Labels (DOKS-managed)
 
@@ -32,52 +32,49 @@ DOKS automatically applies taints and labels to GPU node pools:
 
 These taints prevent non-GPU workloads from landing on expensive GPU nodes. Your Slurm worker pods must carry matching tolerations (shown in Section 6).
 
-### GPU Device Plugin
+> **Deployment assumption:** This guide assumes a two-tier layout — one **mgmt** pool of CPU nodes and one or more **GPU** node pools. Since GPU pools carry automatic taints, all non-GPU workloads (Slurm control plane, monitoring, cert-manager, etc.) will naturally schedule on the mgmt nodes without requiring explicit `nodeSelector` rules. If you add untainted CPU-only worker pools, you may need `nodeSelector` or affinity rules to keep infrastructure pods off those nodes.
 
-**NVIDIA nodes:** DOKS pre-installs the NVIDIA drivers, CUDA toolkit, and container toolkit, but you must deploy the [NVIDIA device plugin](https://github.com/NVIDIA/k8s-device-plugin) via Helm so that `nvidia.com/gpu` resources appear in the kubelet:
+### Accounting Database (optional — required only for Slurm accounting)
 
-```bash
-helm repo add nvdp https://nvidia.github.io/k8s-device-plugin
-helm repo update
+If you want job accounting (`sacct`, `sreport`, fair-share scheduling), you have two options:
 
-helm install nvidia-device-plugin nvdp/nvidia-device-plugin \
-  --namespace kube-system \
-  --set tolerations[0].key=nvidia.com/gpu \
-  --set tolerations[0].operator=Exists \
-  --set tolerations[0].effect=NoSchedule
-```
+**Option A — In-cluster MariaDB (dev/test only):**
+The Slinky Helm chart can deploy a MariaDB instance automatically inside the cluster. Simply enable accounting without providing a `storageConfig` block and the chart handles the rest. This is convenient for quick experiments but is **not recommended for production** because the database lifecycle is tied to the Helm release and does not offer managed backups or high availability.
 
-> You do **not** need the full NVIDIA GPU Operator — DOKS handles drivers and the container toolkit.
-
-**AMD nodes:** DOKS automatically deploys the ROCm drivers and the AMD device plugin. No additional installation is required — `amd.com/gpu` resources are available out of the box.
-
-### Managed MySQL (optional — required only for Slurm accounting)
-
-If you want job accounting (`sacct`, `sreport`, fair-share scheduling), create a managed MySQL database in the same VPC:
+**Option B — Managed MySQL (recommended for production):**
+[Create a managed MySQL database](https://docs.digitalocean.com/products/databases/mysql/how-to/create/) in the same VPC. The accounting DB is lightweight — it stores job records, association/QOS metadata, and periodic usage rollups. Write volume is low (roughly one insert per job start and end), so a **single-node, smallest-size instance** (1 vCPU / 1 GB RAM) is sufficient to start with for most clusters. The main benefit of a managed DB is durability, automated backups, and high-availability options as you scale.
 
 - **Engine:** MySQL 8
-- **Database name:** `slurm_acct`
-- **User:** `slurm`
+- **Size:** db-s-1vcpu-1gb (smallest; scale up only if needed)
+- **Storage:** 10 GB (sufficient for millions of job records)
 - **Connection:** Use the **private host** (VPC network), default managed port `25060`
 
-After creation, store the password as a Kubernetes secret (see Section 2).
+The managed instance ships with a default `doadmin` user and `defaultdb` database. You need to [add a database and user](https://docs.digitalocean.com/products/databases/mysql/how-to/manage-users-and-databases/) for Slurm:
+
+- **Database name:** `slurm_acct`
+- **User:** `slurm`
+
+After creating the user, store its password as a Kubernetes secret (see Section 2).
 
 ### Managed NFS
 
-Create a managed NFS file system in the same VPC. Note the **private IP** and **mount path** from the NFS resource — you will need these for the PV definition in step 4.
+The Slurm cluster uses a shared NFS volume mounted across login and worker pods for home directories, job scripts, and shared data. This gives users a familiar HPC experience where files written on a login node are immediately visible to running jobs.
+
+[Create a managed NFS file system](https://docs.digitalocean.com/products/nfs/how-to/create/) in the same VPC. Note that NFS performance scales with the size of the share. Larger shares get higher throughput and IOPS. For a PoC or small workloads, the smallest tier is fine; for production workloads with heavy I/O, size up accordingly.
+
+Note the *Mount Source** from the NFS resource as you will need these for the PV definition in step 4.
 
 ---
 
 ## 2. Namespace Layout
 
-Create two namespaces:
+Create the Slurm namespace:
 
 ```bash
 kubectl create namespace slurm        # Slinky operator + Slurm cluster
-kubectl create namespace prometheus   # Monitoring stack
 ```
 
-cert-manager installs into its own namespace by default (`cert-manager`).
+cert-manager and kube-prometheus-stack use `--create-namespace` in their Helm install commands to create their namespaces automatically.
 
 If using Slurm accounting (see Section 1), create the database password secret now:
 
@@ -101,82 +98,40 @@ helm repo update
 
 helm install cert-manager jetstack/cert-manager \
   --namespace cert-manager --create-namespace \
-  --set crds.enabled=true \
-  --values cert-manager-values.yaml
-```
-
-`cert-manager-values.yaml` — pin all components to management nodes:
-
-```yaml
-# Controller (top-level keys — not nested under controller:)
-nodeSelector:
-  doks.digitalocean.com/node-pool: mgmt
-
-webhook:
-  nodeSelector:
-    doks.digitalocean.com/node-pool: mgmt
-
-cainjector:
-  nodeSelector:
-    doks.digitalocean.com/node-pool: mgmt
-
-startupapicheck:
-  nodeSelector:
-    doks.digitalocean.com/node-pool: mgmt
+  --set crds.enabled=true
 ```
 
 ### kube-prometheus-stack
+
+Create `prometheus-values.yaml` to use with helm install below:
+
+```yaml
+prometheus:
+  prometheusSpec:
+    retention: 7d
+
+# Node-exporter runs on ALL nodes (DaemonSet) — tolerate GPU taints
+prometheus-node-exporter:
+  tolerations:
+    - operator: Exists
+```
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 
 helm install prometheus prometheus-community/kube-prometheus-stack \
-  --namespace prometheus \
+  --namespace prometheus --create-namespace \
   --values prometheus-values.yaml
 ```
 
-`prometheus-values.yaml` — schedule control-plane components on mgmt nodes, node-exporter everywhere:
 
-```yaml
-prometheus:
-  prometheusSpec:
-    nodeSelector:
-      doks.digitalocean.com/node-pool: mgmt
-    retention: 7d
-
-alertmanager:
-  alertmanagerSpec:
-    nodeSelector:
-      doks.digitalocean.com/node-pool: mgmt
-
-grafana:
-  nodeSelector:
-    doks.digitalocean.com/node-pool: mgmt
-
-kube-state-metrics:
-  nodeSelector:
-    doks.digitalocean.com/node-pool: mgmt
-
-prometheusOperator:
-  nodeSelector:
-    doks.digitalocean.com/node-pool: mgmt
-  admissionWebhooks:
-    patch:
-      nodeSelector:
-        doks.digitalocean.com/node-pool: mgmt
-
-# Node-exporter runs on ALL nodes (DaemonSet)
-prometheus-node-exporter:
-  tolerations:
-    - operator: Exists
-```
 
 ---
 
 ## 4. NFS Shared Storage
 
-The official Slinky guide does not cover shared storage. For job scripts, input data, and output files, create a PersistentVolume backed by the managed NFS and a PersistentVolumeClaim that login and worker pods will mount.
+The official Slinky guide does not cover shared storage. For job scripts, input data, and output files, create a PersistentVolume backed by the managed NFS and a PersistentVolumeClaim that login and worker pods will mount. `server` and `path` values come form the NFS **Mount Source** in the console. 
 
 ```yaml
 # slurm-nfs-pv.yaml
@@ -186,13 +141,16 @@ metadata:
   name: slurm-nfs-pv
 spec:
   capacity:
-    storage: 100Gi          # Adjust to your NFS size
+    storage: 100Gi # Scheduler hint only (NFS won’t enforce quota)
   accessModes:
     - ReadWriteMany
-  persistentVolumeReclaimPolicy: Retain
+  storageClassName: "" 
+  mountOptions:
+    - vers=4.1
+    - nconnect=8
   nfs:
     server: <nfs-private-ip>       # e.g., 10.100.32.2
-    path: <nfs-mount-path>         # from NFS resource details
+    path: <nfs-mount-path>         # e.g. /2633050/31489843-2785-4493-9ed4-8c9526627981
 ---
 # slurm-nfs-pvc.yaml
 apiVersion: v1
@@ -225,36 +183,12 @@ kubectl get pvc -n slurm slurm-nfs-pvc
 
 ## 5. Slinky Operator
 
-Install the Slinky operator with node affinity set to management nodes.
+Install the Slinky operator. The CRDs can be installed as a subchart by setting `crds.enabled=true`:
 
 ```bash
-helm install slinky-operator oci://ghcr.io/slinkyproject/charts/slinky-operator \
-  --namespace slurm \
-  --values values-operator.yaml
-```
-
-`values-operator.yaml`:
-
-```yaml
-operator:
-  affinity:
-    nodeAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        nodeSelectorTerms:
-          - matchExpressions:
-              - key: doks.digitalocean.com/node-pool
-                operator: In
-                values: [mgmt]
-
-webhook:
-  affinity:
-    nodeAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        nodeSelectorTerms:
-          - matchExpressions:
-              - key: doks.digitalocean.com/node-pool
-                operator: In
-                values: [mgmt]
+helm install slurm-operator oci://ghcr.io/slinkyproject/charts/slurm-operator \
+  --set 'crds.enabled=true' \
+  --namespace slurm
 ```
 
 ---
@@ -263,41 +197,27 @@ webhook:
 
 Deploy the Slurm cluster with all DOKS-specific customizations.
 
-```bash
-helm install slurm oci://ghcr.io/slinkyproject/charts/slurm \
-  --namespace slurm \
-  --values values-slurm.yaml
-```
 
-`values-slurm.yaml` — full annotated example:
+Create `slurm-values.yaml` to use with helm install:
 
 ```yaml
 # ── Controller (slurmctld) ──────────────────────────────────────────────
 controller:
-  persistence:
-    enabled: true
-    storageClassName: null   # Uses default StorageClass (do-block-storage)
   extraConfMap:
     ReturnToService: 2       # Auto-return nodes after transient failures
-  podSpec:
-    nodeSelector:
-      doks.digitalocean.com/node-pool: mgmt
   metrics:
     enabled: true
     serviceMonitor:
       enabled: true
       labels:
         release: prometheus  # Must match your Prometheus Helm release name
-      interval: 30s
 
-# ── REST API (slurmrestd) ───────────────────────────────────────────────
-restapi:
-  replicas: 1
-  podSpec:
-    nodeSelector:
-      doks.digitalocean.com/node-pool: mgmt
-
-# ── Accounting (slurmdbd) — omit this block if not using accounting ──
+# ── Accounting (slurmdbd) ──
+# Omit this entire block if you do not need accounting.
+# If accounting is enabled but storageConfig is omitted, Slinky deploys an
+# in-cluster MariaDB automatically (suitable for dev/test only).
+# The storageConfig below points to a managed MySQL instance (recommended
+# for production).
 accounting:
   enabled: true
   storageConfig:
@@ -308,22 +228,16 @@ accounting:
     passwordKeyRef:
       name: slurm-db-password      # Secret created in step 1
       key: password
-  podSpec:
-    nodeSelector:
-      doks.digitalocean.com/node-pool: mgmt
 
 # ── Login Nodes ─────────────────────────────────────────────────────────
 loginsets:
   slinky:
     enabled: true
-    replicas: 1
     login:
       volumeMounts:
         - name: shared-nfs
           mountPath: /shared
     podSpec:
-      nodeSelector:
-        doks.digitalocean.com/node-pool: mgmt
       volumes:
         - name: shared-nfs
           persistentVolumeClaim:
@@ -334,55 +248,47 @@ loginsets:
 
 # ── GPU Worker Nodes ───────────────────────────────────────────────
 #
-# NVIDIA example shown below. For AMD nodes, replace:
-#   - nvidia.com/gpu → amd.com/gpu  (in resources AND tolerations)
-#   - gpu-brand nodeSelector value → amd
+# AMD example shown below. For NVIDIA nodes, replace:
+#   - amd.com/gpu → nvidia.com/gpu  (in resources AND tolerations)
 #
 nodesets:
-  gpu:
-    enabled: true
+  slinky:
     replicas: 4                    # Match your GPU node count
     slurmd:
       resources:
         requests:
           cpu: 3
           memory: 5Gi
-          nvidia.com/gpu: 1        # GPUs per worker pod (amd.com/gpu for AMD)
+          amd.com/gpu: 1           # GPUs per worker pod (nvidia.com/gpu for NVIDIA)
         limits:
           cpu: 3
           memory: 5Gi
-          nvidia.com/gpu: 1        # Adjust to GPUs-per-node
+          amd.com/gpu: 1           # Adjust to GPUs-per-node
       volumeMounts:
         - name: shared-nfs
           mountPath: /shared
     useResourceLimits: true        # Slurm sees container limits as node resources
     partition:
-      enabled: true
       configMap:
         State: UP
         MaxTime: UNLIMITED
     podSpec:
       nodeSelector:
-        doks.digitalocean.com/node-pool: gpu
+        doks.digitalocean.com/gpu-brand: amd  # Use nvidia for NVIDIA nodes
       tolerations:                 # Matches the DOKS-managed taint on GPU nodes
-        - key: nvidia.com/gpu       # Use amd.com/gpu for AMD nodes
+        - key: amd.com/gpu          # Use nvidia.com/gpu for NVIDIA nodes
           operator: Exists
           effect: NoSchedule
       volumes:
         - name: shared-nfs
           persistentVolumeClaim:
             claimName: slurm-nfs-pvc
+```
 
-# ── Partitions ──────────────────────────────────────────────────────────
-partitions:
-  all:
-    enabled: true
-    nodesets:
-      - ALL
-    configMap:
-      State: UP
-      Default: "YES"
-      MaxTime: UNLIMITED
+```bash
+helm install slurm oci://ghcr.io/slinkyproject/charts/slurm \
+  --namespace slurm \
+  --values slurm-values.yaml
 ```
 
 ---
@@ -394,7 +300,7 @@ After all Helm installs complete, run through these checks:
 ### Operator
 
 ```bash
-kubectl get pods -n slurm -l app.kubernetes.io/name=slinky-operator
+kubectl get pods -n slurm -l app.kubernetes.io/name=slurm-operator
 # Both operator and webhook pods should be Running on mgmt nodes
 ```
 
@@ -405,16 +311,6 @@ kubectl get pods -n slurm
 # Expected: controller, accounting, restapi, login, and worker pods all Running
 ```
 
-### GPU Visibility
-
-```bash
-# NVIDIA — verify GPUs are visible to worker pods:
-kubectl exec -it -n slurm slurm-worker-gpu-0 -- nvidia-smi
-
-# AMD — verify GPUs are visible to worker pods:
-kubectl exec -it -n slurm slurm-worker-gpu-0 -- rocm-smi
-```
-
 ### Node Health
 
 ```bash
@@ -423,13 +319,7 @@ kubectl exec -it -n slurm deploy/slurm-login-slinky -- bash
 
 # Inside the pod:
 sinfo -N -l
-# All nodes should show "idle" state with GRES listing gpu resources
-
-# NVIDIA:
-srun -N1 --gres=gpu:1 nvidia-smi
-
-# AMD:
-srun -N1 --gres=gpu:1 rocm-smi
+# All nodes should show "idle" state
 ```
 
 ### Accounting
@@ -447,7 +337,7 @@ sacctmgr show cluster
 echo "hello" > /shared/test.txt
 
 # From a worker pod:
-kubectl exec -it -n slurm slurm-worker-gpu-0 -- cat /shared/test.txt
+kubectl exec -it -n slurm slurm-worker-slinky-0 -- cat /shared/test.txt
 # Should print "hello"
 ```
 

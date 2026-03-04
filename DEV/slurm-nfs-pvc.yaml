@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: slurm-nfs-pvc
+  namespace: slurm
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""             # Bind to the static PV
+  volumeName: slurm-nfs-pv
+  resources:
+    requests:
+      storage: 100Gi
