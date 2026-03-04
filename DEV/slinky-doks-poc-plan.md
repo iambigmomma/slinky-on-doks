@@ -2,7 +2,7 @@
 
 ## Objective
 
-Validate that Slurm, deployed via the Slinky operator (v1.0.0), functions correctly on DigitalOcean Kubernetes Service (DOKS). This PoC validates both the Slinky integration layer and Slurm itself as a workload manager. Beyond infrastructure validation, a key goal is building hands-on competency with Slurm concepts, commands, and operational patterns (partitions, job lifecycle, accounting, fairshare, priority, queuing, etc.) so that conversations with customers are grounded in direct experience.
+Deploy Slurm via the Slinky operator (v1.0.0) on DigitalOcean Kubernetes Service (DOKS) and validate the environment is functional. This plan provisions the infrastructure, deploys Slurm, and confirms basic job submission works. Once complete, the environment is ready for hands-on Slurm exploration using the companion Slurm Operations Guide.
 
 No GPUs are involved; all jobs are CPU-based mocks simulating training workload patterns.
 
@@ -101,7 +101,6 @@ slinky/logs             # Tail operator and controller logs
 slurm/shell             # kubectl exec into login pod (interactive shell)
 slurm/info              # Run sinfo, squeue, scontrol show partitions from login pod
 slurm/submit-test       # Copy job scripts to NFS, submit basic test jobs
-slurm/run-validation    # Run the full validation suite (Phase 4 tests)
 slurm/test-restapi      # Test slurmrestd API endpoints
 
 # Observability
@@ -284,65 +283,21 @@ After deploying (iterating as needed), check and report the status of each item:
 
 ---
 
-## Phase 4: Job Submission & Slurm Operations
+## Phase 4: Job Scripts, Observability & Smoke Test
 
-**Goal**: Demonstrate Slurm scheduling behaviors through Slinky and build hands-on familiarity with Slurm commands and concepts.
+**Goal**: Deploy job scripts to NFS, set up the Grafana dashboard, and confirm end-to-end job submission works. This is the "environment ready" gate before hands-on exploration.
 
-This phase is intentionally exploratory. Generate the job scripts and the validation/test runner scripts listed in Deliverables. Then deploy the job scripts to NFS via `make slurm/submit-test`. The interactive Slurm CLI exploration described in the test suite (4a through 4g) will be done manually via `make slurm/shell`. After generating and deploying the scripts, execute the automated validation and report the status of each item.
+Generate the job scripts, the REST API test script, and the Grafana dashboard configuration. Deploy everything, run a smoke test to confirm jobs submit and complete, and report the status of each validation item.
 
-### Test Suite
+### Tasks
 
-All jobs are submitted from the login pod via `make slurm/shell`, then `sbatch` or `srun`.
+1. **Job scripts**: Generate the mock job scripts below and deploy them to NFS via `make slurm/submit-test`.
 
-#### 4a. Cluster Orientation (Learn the Slurm CLI)
-Before submitting jobs, explore the cluster state:
-- `sinfo` -- view partition and node state (idle, alloc, drain, down)
-- `sinfo -N -l` -- detailed per-node view with CPU/memory
-- `scontrol show nodes` -- full node configuration details
-- `scontrol show partitions` -- partition configuration, limits, defaults
-- `scontrol show config` -- full Slurm configuration dump
-- `sacctmgr show cluster` -- verify accounting cluster registration
-- `sacctmgr show account` -- view accounts
-- `sacctmgr show user` -- view users
-- `sacctmgr show qos` -- view quality-of-service levels
+2. **REST API test script**: Generate `scripts/test-restapi.sh` for curl-based slurmrestd testing.
 
-#### 4b. Basic Job Submit/Complete
-- `srun hostname` -- interactive allocation, immediate execution.
-- `sbatch --wrap="hostname && sleep 30"` -- batch job, confirm output captured on NFS.
-- `squeue` while job runs -- observe job state transitions (PD -> R -> CG).
-- `sacct -j <jobid> --format=JobID,JobName,Partition,State,ExitCode,Elapsed,NodeList` -- verify accounting records in managed MySQL.
-- `scontrol show job <jobid>` -- detailed job information.
+3. **Grafana dashboard**: Import or create a Slurm dashboard using metrics from the slurm-exporter. Key metrics: `slurm_nodes_total`, `slurm_nodes_idle`, `slurm_nodes_alloc`, `slurm_jobs_pending`, `slurm_jobs_running`.
 
-#### 4c. Multi-Node Job
-- Submit a job requesting multiple nodes: `sbatch -N 2 --ntasks-per-node=2 mpi_mock.sh`
-- The mock script runs a CPU-intensive workload (e.g., `stress-ng` or a Python matrix multiply) on each node.
-- Verify `squeue` shows the job allocated across 2 nodes.
-- Verify `sacct` records the multi-node allocation.
-- Experiment with `srun` within the job to understand task distribution.
-
-#### 4d. Job Arrays
-- Submit a job array: `sbatch --array=0-9 array_job.sh`
-- Each array task does a parameterized sleep + CPU work.
-- Verify `squeue` shows array tasks with the `_N` suffix notation.
-- Verify all 10 tasks complete and produce individual output files on NFS.
-- Try `scancel --array=5-9` to cancel a subset mid-run.
-
-#### 4e. Priority, Queuing & Fairshare
-- Fill the cluster: submit enough jobs to consume all 4 compute nodes.
-- Submit additional jobs -- verify they queue (state `PD` in `squeue`) with reason `Resources`.
-- Submit a high-priority job: `sbatch --priority=1000 ...` -- verify it jumps the queue.
-- Use `sprio` to inspect job priority factors.
-- Use `sshare` to view fairshare data (will be minimal with a fresh cluster, but demonstrates the concept).
-- Experiment with `scontrol hold <jobid>` and `scontrol release <jobid>`.
-
-#### 4f. Partitions & QoS (if time permits)
-- Create a second partition via `scontrol` or by updating slurm.conf through `make slinky/update-slurm`.
-- Test submitting jobs to specific partitions: `sbatch -p <partition> ...`
-- Experiment with job time limits and see what happens when a job exceeds its wall time.
-
-#### 4g. slurmrestd API
-- `make slurm/test-restapi` to submit a job and retrieve status via the REST API.
-- Demonstrates programmatic integration path.
+4. **Smoke test**: Submit a basic job (`sbatch --wrap="hostname && sleep 10"`), wait for completion, verify `sacct` records the job and output appears on NFS. Submit one multi-node job to confirm cross-node allocation works. This is a functional gate, not an exhaustive test.
 
 ### Mock Job Scripts
 
@@ -394,68 +349,39 @@ stress-ng --cpu 1 --timeout ${SLEEP_TIME}s --metrics-brief
 echo "Task $SLURM_ARRAY_TASK_ID complete"
 ```
 
+```bash
+# jobs/queue_filler.sh -- consumes a full node to create backpressure
+#!/bin/bash
+#SBATCH --job-name=filler
+#SBATCH --time=00:10:00
+#SBATCH --ntasks=1
+#SBATCH --exclusive
+
+echo "Filler job $SLURM_JOB_ID holding $(hostname) at $(date)"
+sleep 600
+echo "Filler job $SLURM_JOB_ID released at $(date)"
+```
+
 ### Deliverables
 - `jobs/cpu_stress.sh`, `jobs/multi_node_mock.sh`, `jobs/array_job.sh`, `jobs/queue_filler.sh`
-- `scripts/run-validation-suite.sh` -- automated script that submits all tests and collects results
-- `scripts/test-restapi.sh` -- curl-based slurmrestd test
-- `docs/slurm-commands-cheatsheet.md` -- personal reference of commands used and what they do
+- `scripts/test-restapi.sh`
+- `docs/grafana-dashboard.json`
 
 ### Validation
-After deploying job scripts and running the automated validation suite, report the status of each item:
-- [ ] All jobs complete successfully (exit code 0).
-- [ ] `sacct` shows correct node allocations, runtimes, and exit codes.
-- [ ] Job output files appear on NFS.
-- [ ] Queue behavior matches expectations (pending -> running transitions).
-- [ ] REST API returns correct job state.
+After deploying and running the smoke test, check and report the status of each item:
+- [ ] Job scripts are present on NFS (accessible from login pod).
+- [ ] Smoke test: single-node job completes (exit code 0), `sacct` records it, output file on NFS.
+- [ ] Smoke test: multi-node job allocates across 2 nodes, completes successfully.
+- [ ] REST API responds to job status query.
+- [ ] Grafana dashboard shows Slurm metrics.
+- [ ] `make slurm/shell` provides interactive access to the login pod.
+
+**The environment is now ready for hands-on Slurm exploration using the Slurm Operations Guide.**
 
 
 ---
 
-## Phase 5: Observability & Node State Exploration
-
-**Goal**: Confirm metrics flow and explore the Kubernetes / Slurm state boundary.
-
-Generate the Grafana dashboard configuration and any investigation scripts. Deploy the dashboard, then execute the validation checks. The drain exploration (5c, 5d) will be done interactively. Report the status of each validation item.
-
-### Tasks
-
-#### 5a. Grafana Dashboard
-- Import or create a Slurm dashboard using metrics from the slurm-exporter.
-- Key metrics: `slurm_nodes_total`, `slurm_nodes_idle`, `slurm_nodes_alloc`, `slurm_jobs_pending`, `slurm_jobs_running`.
-- Capture screenshots during job submission bursts.
-
-#### 5b. Slurm Node State and Pod Conditions
-- The Slinky operator reflects Slurm node states as pod conditions on NodeSet pods (Idle, Allocated, Mixed, Down, Drain). Verify this:
-  - While jobs run, check `kubectl get pods -n slurm -o yaml` for the compute pods -- confirm conditions reflect `Allocated` or `Mixed`.
-  - When idle, confirm conditions reflect `Idle`.
-
-#### 5c. Node Drain Exploration (Investigative)
-- **Kubernetes to Slurm direction**: `kubectl cordon` a compute node, then `kubectl drain` it (with appropriate flags). Observe:
-  - Does the slurmd pod get evicted?
-  - Does Slurm mark that node as `Down` or `Drain`?
-  - Do pending jobs avoid it?
-  - What happens to a running job on that node?
-- **Document findings.** The expectation is that this may partially work (pod eviction triggers Slurm to mark the node down) but there is no automated health-signal propagation from Kubernetes node conditions into Slurm scheduling decisions -- which is the gap identified in our SUNK analysis.
-
-#### 5d. Operator-Initiated Drain
-- Scale down the NodeSet replica count from 4 to 3 via `make slinky/update-slurm` or `kubectl edit`.
-- The operator documentation states it marks nodes as `Drain` before termination. Verify this behaves gracefully with running jobs.
-
-### Deliverables
-- `docs/grafana-dashboard.json` (exported)
-- `docs/node-state-findings.md` -- documented observations from 5b, 5c, 5d
-- Screenshots in `docs/screenshots/`
-
-### Validation
-After deploying the dashboard, report the status of each item:
-- [ ] Grafana shows Slurm metrics updating in real-time.
-- [ ] Pod conditions accurately reflect Slurm node state.
-- [ ] Node drain findings documented with specific observations.
-
-
----
-
-## Phase 6: Cleanup & Documentation
+## Phase 5: Cleanup & Documentation
 
 **Goal**: Tear everything down cleanly and produce a findings summary.
 
@@ -497,7 +423,7 @@ Run `make down` to tear down all resources, then generate the findings and cost 
 
 ## Implementation Notes
 
-This plan is structured in six sequential phases. Each phase will be requested one at a time, with review between phases. The Makefile is the primary interface; all deploy/update/teardown operations go through `make` targets.
+This plan is structured in five sequential phases. Each phase will be requested one at a time, with review between phases. The Makefile is the primary interface; all deploy/update/teardown operations go through `make` targets.
 
 For each phase:
 1. Generate all files specified in that phase's Deliverables.

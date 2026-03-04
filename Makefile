@@ -190,6 +190,10 @@ slurm/test-restapi: ## Test slurmrestd API endpoints
 
 # ── Observability ─────────────────────────────────────────────────────────────
 
+.PHONY: obs/dashboard
+obs/dashboard: ## Deploy Slurm Grafana dashboard (ConfigMap loaded by sidecar)
+	kubectl apply -f manifests/grafana-slurm-dashboard.yaml
+
 .PHONY: obs/grafana
 obs/grafana: ## Port-forward Grafana to localhost:3000
 	@echo "Grafana available at http://localhost:3000 (admin/prom-operator)"
