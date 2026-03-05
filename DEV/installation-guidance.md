@@ -56,6 +56,8 @@ The managed instance ships with a default `doadmin` user and `defaultdb` databas
 
 After creating the user, store its password as a Kubernetes secret (see Section 2).
 
+[Configure trusted sources](https://docs.digitalocean.com/products/databases/mysql/how-to/secure/) on the database to restrict connections to your DOKS cluster and any bastion hosts that need access.
+
 ### Managed NFS
 
 The Slurm cluster uses a shared NFS volume mounted across login and worker pods for home directories, job scripts, and shared data. This gives users a familiar HPC experience where files written on a login node are immediately visible to running jobs.
@@ -221,8 +223,8 @@ controller:
 accounting:
   enabled: true
   storageConfig:
-    host: <mysql-private-host>     # Managed MySQL private hostname
-    port: 25060                    # Managed MySQL default port
+    host: <mysql-private-host>     # <-- REPLACE with managed MySQL private hostname
+    port: 25060                    # <-- REPLACE if your managed DB uses a different port
     database: slurm_acct
     username: slurm
     passwordKeyRef:
@@ -249,34 +251,25 @@ loginsets:
 # ── GPU Worker Nodes ───────────────────────────────────────────────
 #
 # AMD example shown below. For NVIDIA nodes, replace:
-#   - amd.com/gpu → nvidia.com/gpu  (in resources AND tolerations)
+#   - amd.com/gpu → nvidia.com/gpu  (in tolerations)
+#   - gpu-brand label value → nvidia  (in nodeSelector)
 #
 nodesets:
   slinky:
-    replicas: 4                    # Match your GPU node count
+    replicas: 4                    # <-- REPLACE with your GPU node count
     slurmd:
-      resources:
-        requests:
-          cpu: 3
-          memory: 5Gi
-          amd.com/gpu: 1           # GPUs per worker pod (nvidia.com/gpu for NVIDIA)
-        limits:
-          cpu: 3
-          memory: 5Gi
-          amd.com/gpu: 1           # Adjust to GPUs-per-node
       volumeMounts:
         - name: shared-nfs
           mountPath: /shared
-    useResourceLimits: true        # Slurm sees container limits as node resources
     partition:
       configMap:
         State: UP
         MaxTime: UNLIMITED
     podSpec:
       nodeSelector:
-        doks.digitalocean.com/gpu-brand: amd  # Use nvidia for NVIDIA nodes
-      tolerations:                 # Matches the DOKS-managed taint on GPU nodes
-        - key: amd.com/gpu          # Use nvidia.com/gpu for NVIDIA nodes
+        doks.digitalocean.com/gpu-brand: amd  # <-- REPLACE with nvidia for NVIDIA nodes
+      tolerations:
+        - key: amd.com/gpu          # <-- REPLACE with nvidia.com/gpu for NVIDIA nodes
           operator: Exists
           effect: NoSchedule
       volumes:

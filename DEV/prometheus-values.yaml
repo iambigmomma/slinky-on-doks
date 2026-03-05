@@ -1,8 +1,0 @@
-prometheus:
-  prometheusSpec:
-    retention: 7d
-
-# Node-exporter runs on ALL nodes (DaemonSet) — tolerate GPU taints
-prometheus-node-exporter:
-  tolerations:
-    - operator: Exists
