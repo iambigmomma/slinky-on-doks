@@ -1,7 +1,7 @@
 variable "region" {
   description = "DigitalOcean region"
   type        = string
-  default     = "nyc2"
+  default     = "atl1"
 }
 
 variable "project_name" {
@@ -50,16 +50,27 @@ variable "mgmt_node_count" {
   default     = 3
 }
 
-variable "compute_node_size" {
-  description = "Droplet size for compute node pool"
+variable "gpu_node_size" {
+  description = "Droplet size for GPU worker node pool"
   type        = string
-  default     = "c-4"
+  default     = "gpu-mi325x1-256gb"
 }
 
-variable "compute_node_count" {
-  description = "Number of compute nodes"
+variable "gpu_node_count" {
+  description = "Number of GPU worker nodes"
   type        = number
-  default     = 4
+  default     = 2
+}
+
+variable "gpu_vendor" {
+  description = "GPU vendor (amd or nvidia) — determines taints and labels"
+  type        = string
+  default     = "amd"
+
+  validation {
+    condition     = contains(["nvidia", "amd"], var.gpu_vendor)
+    error_message = "gpu_vendor must be \"nvidia\" or \"amd\"."
+  }
 }
 
 # ── Database ─────────────────────────────────────────────────────────────────

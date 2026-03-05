@@ -29,13 +29,12 @@ infra/output: ## Print all Terraform outputs
 # ── Prerequisites (Helm + Manifests) ─────────────────────────────────────────
 
 .PHONY: prereqs/install
-prereqs/install: ## Install cert-manager, prometheus, metrics-server
+prereqs/install: ## Install cert-manager and prometheus
 	helm repo add jetstack https://charts.jetstack.io --force-update
 	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update
 	helm repo update
 	helm upgrade --install cert-manager jetstack/cert-manager \
 		--set crds.enabled=true \
-		--values helm/prerequisites/cert-manager-values.yaml \
 		--namespace cert-manager --create-namespace \
 		--wait
 	helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
@@ -50,9 +49,6 @@ prereqs/status: ## Check pod status across prerequisite namespaces
 	@echo ""
 	@echo "=== prometheus ==="
 	kubectl get pods -n prometheus
-	@echo ""
-	@echo "=== metrics-server ==="
-	-kubectl get pods -n kube-system -l k8s-app=metrics-server
 
 .PHONY: prereqs/uninstall
 prereqs/uninstall: ## Uninstall all prerequisites
@@ -105,19 +101,24 @@ slinky/create-db-secret: ## Create Slurm DB password secret from Terraform outpu
 		--dry-run=client -o yaml | kubectl apply -f -
 
 .PHONY: slinky/install-operator
-slinky/install-operator: ## Install slurm-operator CRDs and operator
-	helm upgrade --install slurm-operator-crds \
-		oci://ghcr.io/slinkyproject/charts/slurm-operator-crds \
-		--namespace slinky --create-namespace \
-		--wait
+slinky/install-operator: ## Install slurm-operator with CRDs
 	helm upgrade --install slurm-operator \
 		oci://ghcr.io/slinkyproject/charts/slurm-operator \
-		--values helm/slinky/values-operator.yaml \
+		--set crds.enabled=true \
 		--namespace slinky --create-namespace \
 		--wait
 
+.PHONY: slinky/configure
+slinky/configure: ## Generate values-slurm.yaml from template using Terraform outputs
+	@DB_HOST=$$($(TF) output -raw db_host) && \
+	GPU_VENDOR=$$($(TF) output -raw gpu_vendor) && \
+	GPU_TAINT_KEY=$$($(TF) output -raw gpu_taint_key) && \
+	GPU_NODE_COUNT=$$($(TF) output -raw gpu_node_count) && \
+	sed "s|__DB_HOST__|$$DB_HOST|g; s|__GPU_VENDOR__|$$GPU_VENDOR|g; s|__GPU_TAINT_KEY__|$$GPU_TAINT_KEY|g; s|__GPU_NODE_COUNT__|$$GPU_NODE_COUNT|g" \
+		helm/slinky/values-slurm.yaml.tpl > helm/slinky/values-slurm.yaml
+
 .PHONY: slinky/install-slurm
-slinky/install-slurm: slinky/create-db-secret ## Install Slurm cluster
+slinky/install-slurm: slinky/create-db-secret slinky/configure ## Install Slurm cluster
 	helm upgrade --install slurm \
 		oci://ghcr.io/slinkyproject/charts/slurm \
 		--values helm/slinky/values-slurm.yaml \
@@ -125,7 +126,7 @@ slinky/install-slurm: slinky/create-db-secret ## Install Slurm cluster
 		--wait --timeout 10m
 
 .PHONY: slinky/update-slurm
-slinky/update-slurm: ## Helm upgrade Slurm cluster with updated values
+slinky/update-slurm: slinky/configure ## Helm upgrade Slurm cluster with updated values
 	helm upgrade slurm \
 		oci://ghcr.io/slinkyproject/charts/slurm \
 		--values helm/slinky/values-slurm.yaml \
@@ -147,7 +148,6 @@ slinky/status: ## Show pods across slinky + slurm namespaces
 slinky/uninstall: ## Uninstall Slurm cluster, operator, CRDs
 	-helm uninstall slurm -n slurm
 	-helm uninstall slurm-operator -n slinky
-	-helm uninstall slurm-operator-crds -n slinky
 	-kubectl delete namespace slurm --ignore-not-found
 	-kubectl delete namespace slinky --ignore-not-found
 
@@ -207,7 +207,7 @@ obs/prometheus: ## Port-forward Prometheus to localhost:9090
 # ── Lifecycle / Compound Targets ──────────────────────────────────────────────
 
 .PHONY: up
-up: infra/apply prereqs/install nfs/configure slinky/install-operator slinky/create-db-secret slinky/install-slurm ## Full deploy: infra -> prereqs -> nfs -> slinky
+up: infra/apply prereqs/install nfs/configure slinky/install-operator slinky/install-slurm ## Full deploy: infra -> prereqs -> nfs -> slinky
 
 .PHONY: down
 down: slinky/uninstall prereqs/uninstall infra/destroy ## Full teardown: slinky -> prereqs -> infra

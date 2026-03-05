@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --time=00:05:00
 #SBATCH --output=/shared/output/multi_node-%j.out
-#SBATCH --partition=all
+#SBATCH --partition=slinky
 
 echo "=== Multi-Node Distributed Work ==="
 echo "Job ID: ${SLURM_JOB_ID}"

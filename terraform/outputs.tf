@@ -66,6 +66,23 @@ output "db_password" {
   sensitive   = true
 }
 
+# ── GPU ──────────────────────────────────────────────────────────────────────
+
+output "gpu_vendor" {
+  description = "GPU vendor (amd or nvidia)"
+  value       = var.gpu_vendor
+}
+
+output "gpu_taint_key" {
+  description = "GPU taint key derived from vendor"
+  value       = "${var.gpu_vendor}.com/gpu"
+}
+
+output "gpu_node_count" {
+  description = "Number of GPU worker nodes"
+  value       = var.gpu_node_count
+}
+
 # ── NFS ──────────────────────────────────────────────────────────────────────
 
 output "nfs_host" {

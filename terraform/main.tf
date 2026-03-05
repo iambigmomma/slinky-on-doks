@@ -23,31 +23,16 @@ resource "digitalocean_kubernetes_cluster" "main" {
     name       = "mgmt"
     size       = var.mgmt_node_size
     node_count = var.mgmt_node_count
-
-    labels = {
-      role = "management"
-    }
-
   }
 }
 
-# ── Compute Node Pool ────────────────────────────────────────────────────────
+# ── GPU Node Pool ─────────────────────────────────────────────────────────────
 
-resource "digitalocean_kubernetes_node_pool" "compute" {
+resource "digitalocean_kubernetes_node_pool" "gpu" {
   cluster_id = digitalocean_kubernetes_cluster.main.id
-  name       = "compute"
-  size       = var.compute_node_size
-  node_count = var.compute_node_count
-
-  labels = {
-    role = "compute"
-  }
-
-  taint {
-    key    = "nvidia.com/gpu"
-    value  = ""
-    effect = "NoSchedule"
-  }
+  name       = "gpu"
+  size       = var.gpu_node_size
+  node_count = var.gpu_node_count
 }
 
 # ── MySQL Cluster ────────────────────────────────────────────────────────────

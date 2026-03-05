@@ -4,7 +4,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --time=00:05:00
 #SBATCH --output=/shared/output/cpu_stress-%j.out
-#SBATCH --partition=all
+#SBATCH --partition=slinky
 
 echo "=== CPU Stress Test ==="
 echo "Node: $(hostname)"

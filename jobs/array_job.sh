@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --time=00:05:00
 #SBATCH --output=/shared/output/array_job-%A_%a.out
-#SBATCH --partition=all
+#SBATCH --partition=slinky
 
 echo "=== Hyperparameter Sweep ==="
 echo "Array Job ID: ${SLURM_ARRAY_JOB_ID}"

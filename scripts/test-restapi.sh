@@ -128,7 +128,7 @@ SUBMIT_RESPONSE=$(curl -s -w "\n%{http_code}" \
             "current_working_directory": "/shared/output",
             "standard_output": "/shared/output/restapi-test-%j.out",
             "environment": ["PATH=/usr/bin:/bin"],
-            "partition": "all"
+            "partition": "slinky"
         },
         "script": "#!/bin/bash\necho \"REST API test job on $(hostname)\"\nsleep 5\necho done"
     }' \

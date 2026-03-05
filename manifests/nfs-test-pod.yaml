@@ -6,12 +6,6 @@ metadata:
   namespace: slurm
 spec:
   restartPolicy: Never
-  nodeSelector:
-    role: management
-  tolerations:
-    - key: role
-      value: management
-      effect: NoSchedule
   securityContext:
     runAsUser: 1000
     runAsGroup: 1000

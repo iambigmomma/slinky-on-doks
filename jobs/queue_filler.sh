@@ -4,7 +4,7 @@
 #SBATCH --exclusive
 #SBATCH --time=00:15:00
 #SBATCH --output=/shared/output/queue_filler-%j.out
-#SBATCH --partition=all
+#SBATCH --partition=slinky
 
 echo "=== Queue Filler (Node Hold) ==="
 echo "Node: $(hostname)"
