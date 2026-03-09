@@ -286,12 +286,14 @@ slurm/run-validation: ## Run the full validation suite
 
 .PHONY: slurm/submit-rccl-1node
 slurm/submit-rccl-1node: ## Submit single-node RCCL all-reduce test
-	kubectl cp jobs/rccl-allreduce-1node.sh slurm/deploy/slurm-login-slinky:/shared/jobs/ -c login
+	kubectl exec -i -n slurm deploy/slurm-login-slinky -c login -- tee /shared/jobs/rccl-allreduce-1node.sh < jobs/rccl-allreduce-1node.sh > /dev/null
+	kubectl exec -n slurm deploy/slurm-login-slinky -c login -- chmod +x /shared/jobs/rccl-allreduce-1node.sh
 	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/rccl-allreduce-1node.sh
 
 .PHONY: slurm/submit-rccl-2node
 slurm/submit-rccl-2node: ## Submit multi-node RCCL all-reduce test
-	kubectl cp jobs/rccl-allreduce-2node.sh slurm/deploy/slurm-login-slinky:/shared/jobs/ -c login
+	kubectl exec -i -n slurm deploy/slurm-login-slinky -c login -- tee /shared/jobs/rccl-allreduce-2node.sh < jobs/rccl-allreduce-2node.sh > /dev/null
+	kubectl exec -n slurm deploy/slurm-login-slinky -c login -- chmod +x /shared/jobs/rccl-allreduce-2node.sh
 	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/rccl-allreduce-2node.sh
 
 .PHONY: slurm/test-restapi
