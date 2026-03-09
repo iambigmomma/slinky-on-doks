@@ -2,6 +2,8 @@
 
 This guide walks through deploying [Slinky](https://github.com/SlinkyProject/slurm-operator) (Slurm on Kubernetes) on DigitalOcean DOKS and running a multi-node RCCL all-reduce benchmark over an RDMA fabric. It covers infrastructure provisioning, GPU discovery, fabric setup, and Slurm cluster configuration — everything the [official Slinky installation guide](https://github.com/SlinkyProject/slurm-operator) does not address for a DOKS environment. NCCL (NVIDIA) workloads follow the same pattern; swap the GPU vendor, container image, and device paths.
 
+> **Want automated deployment?** The [slinky-on-doks](https://github.com/DO-Solutions/slinky-on-doks) repo contains Terraform configs and Kubernetes manifests to deploy a full PoC environment with a single `make up` command.
+
 ---
 
 ## 1. Infrastructure Prerequisites
