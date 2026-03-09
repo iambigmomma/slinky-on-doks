@@ -10,7 +10,7 @@ Automated deployment of [Slinky](https://github.com/SlinkyProject/slurm-operator
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    DOKS Cluster (VPC)                        │
+│                    DOKS Cluster (VPC)                       │
 │                                                             │
 │  ┌─────────────────────┐    ┌────────────────────────────┐  │
 │  │    mgmt pool (CPU)  │    │     gpu pool (GPU)         │  │
@@ -21,7 +21,7 @@ Automated deployment of [Slinky](https://github.com/SlinkyProject/slurm-operator
 │  │  login node         │    │  ...                       │  │
 │  │  slurm-operator     │    │                            │  │
 │  │  cert-manager       │    │                            │  │
-│  │  prometheus/grafana  │    │                            │  │
+│  │  prometheus/grafana │    │                            │  │
 │  └─────────┬───────────┘    └────────────────────────────┘  │
 │            │                                                │
 │  ┌─────────┴───────────┐    ┌────────────────────────────┐  │
