@@ -4,6 +4,8 @@ Automated deployment of [Slinky](https://github.com/SlinkyProject/slurm-operator
 
 > **Prefer manual steps?** See the [Manual Install Guide](MANUAL-INSTALL-GUIDE.md) for step-by-step kubectl/helm commands with explanations.
 
+> **Support disclaimer**: DigitalOcean does not provide direct support for Slinky or Slurm. These instructions are offered as guidance only. While the underlying DigitalOcean services (DOKS, Managed NFS, DBaaS) are fully supported, issues related to Slinky, Slurm, or their configuration are outside the scope of DigitalOcean support.
+
 ## Architecture
 
 ```
