@@ -1,6 +1,8 @@
-# Slinky on DOKS — GPU Slurm Cluster
+# Slinky on DOKS — Multi-Node GPU Training
 
-Automated deployment of [Slinky](https://github.com/SlinkyProject/slurm-operator) (Slurm on Kubernetes) on DigitalOcean DOKS with GPU worker nodes.
+Automated deployment of [Slinky](https://github.com/SlinkyProject/slurm-operator) (Slurm on Kubernetes) on DigitalOcean DOKS, from infrastructure provisioning through running a multi-node RCCL all-reduce benchmark over an RDMA fabric. NCCL (NVIDIA) workloads follow the same pattern — swap the GPU vendor, container image, and device paths.
+
+> **Prefer manual steps?** See the [Manual Install Guide](MANUAL-INSTALL-GUIDE.md) for step-by-step kubectl/helm commands with explanations.
 
 ## Architecture
 
@@ -31,28 +33,44 @@ DOKS automatically applies taints to GPU node pools, so non-GPU workloads (opera
 
 ## Prerequisites
 
-- DigitalOcean account with GPU Droplet access
+### CLI Tools
+
 - [doctl](https://docs.digitalocean.com/reference/doctl/) configured with your API token
 - [Terraform](https://www.terraform.io/) >= 1.5
 - [Helm](https://helm.sh/) >= 3.12
 - [kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [Docker](https://docs.docker.com/get-docker/) (for building the custom slurmd image)
 
-## Quick Start
+### DigitalOcean Account
+
+- GPU Droplet access enabled (request via support if needed)
+- `doctl` authenticated (`doctl auth init`)
+
+### Container Registry
+
+Workers run a custom slurmd image with ROCm/RCCL libraries. This image must be pushed to a registry accessible by DOKS (e.g., `ghcr.io`).
+
+> **DOKS image size limits**: Layers > 5GB or total image size > 20GB are not supported until Q2 2026. The `slurmd-rocm` image is designed to stay within these limits. See [docker/slurmd-rocm/README.md](docker/slurmd-rocm/README.md) for build details.
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DIGITALOCEAN_TOKEN` | Yes | DigitalOcean API token (used by Terraform) |
+| `SLURMD_IMAGE` | Yes | Full image reference, e.g. `ghcr.io/yourorg/slurmd-rocm:25.11` |
+| `REGISTRY_USER` | Yes | Registry username for image pull secret |
+| `REGISTRY_PASSWORD` | Yes | Registry password/token for image pull secret |
+
+## Configuration
+
+### Terraform Variables
 
 ```bash
-# 1. Configure
 cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 # Edit terraform.tfvars — set region, GPU node size/count, gpu_vendor
-
-# 2. Deploy everything
-make up
-
-# 3. Verify
-make status
-make slurm/shell   # interactive login node shell
 ```
 
-## GPU Vendor Configuration
+### GPU Vendor
 
 The default is AMD (`gpu_vendor = "amd"`). For NVIDIA GPUs, set in `terraform.tfvars`:
 
@@ -63,63 +81,114 @@ gpu_node_size = "gpu-h100x1-80gb"  # or your NVIDIA droplet size
 
 The Makefile automatically derives the correct taint key (`amd.com/gpu` or `nvidia.com/gpu`) and node selector label from the `gpu_vendor` variable.
 
-## Make Targets
-
-```
-make help
-```
-
-| Target | Description |
-|--------|-------------|
-| `up` | Full deploy: infra, prereqs, NFS, operator, Slurm |
-| `down` | Full teardown |
-| `status` | Show status of all components |
-| `infra/plan` | Preview Terraform changes |
-| `infra/apply` | Provision DOKS, MySQL, NFS, VPC |
-| `prereqs/install` | Install cert-manager and Prometheus |
-| `nfs/configure` | Generate NFS PV/PVC from Terraform outputs |
-| `slinky/install-operator` | Install Slinky operator with CRDs |
-| `slinky/configure` | Generate Slurm values from template |
-| `slinky/install-slurm` | Install Slurm cluster |
-| `slurm/shell` | Interactive login node shell |
-| `slurm/info` | Show sinfo, squeue, partitions |
-| `docker/build-slurmd` | Build custom slurmd image with ROCm/RCCL |
-| `docker/push-slurmd` | Push slurmd image to ghcr.io |
-| `fabric/install` | Install Multus + fabric NADs |
-| `fabric/status` | Check Multus and NAD status |
-| `slurm/test-fabric` | Verify fabric NICs and RDMA devices on workers |
-| `gpu/discover-gres` | Discover GPU device paths and print gres.conf line |
-| `slurm/submit-rccl-1node` | Submit single-node RCCL all-reduce test |
-| `slurm/submit-rccl-2node` | Submit multi-node RCCL all-reduce test |
-| `obs/grafana` | Port-forward Grafana to localhost:3000 |
-
-## RDMA Fabric Setup
-
-GPU-to-GPU communication across nodes uses RoCE (RDMA over Converged Ethernet) over dedicated fabric NICs. This requires [Multus CNI](https://github.com/k8snetworkplumbingwg/multus-cni) to attach the host fabric interfaces into worker pods.
+## Quick Start
 
 ```bash
-# Install Multus + NetworkAttachmentDefinitions
-make fabric/install
+# 1. Build and push custom slurmd image
+make docker/build-slurmd
+docker login ghcr.io   # or your registry
+make docker/push-slurmd
 
-# Verify
-make fabric/status
+# 2. Deploy everything (infra, prereqs, NFS, fabric, operator, Slurm)
+make up
+
+# 3. Discover GPUs and update Slurm config
+make gpu/discover-gres
+make slinky/update-slurm
+
+# 4. Verify
+make status
+make slurm/shell   # interactive login node shell
 ```
 
-Each DOKS MI325X node has 8 fabric NICs (`fabric0`–`fabric7`). The [NAD manifests](manifests/fabric-nads.yaml) use the `host-device` CNI plugin to move each NIC into the pod network namespace. The Helm values template wires these into worker pods via:
+## Step-by-Step Guide
 
-- **Multus annotations** — `k8s.v1.cni.cncf.io/networks` on the worker pod spec attaches all 8 fabric interfaces.
-- **RDMA device resources** — `rdma/fabric0`–`rdma/fabric7` in the resource requests/limits ensure the device plugin exposes the corresponding RDMA devices.
-- **GRes configuration** — GPU resources use file-based detection (`gres.conf`) mapping to `/dev/dri/renderD[128,136,...,184]` since Slurm's autodetect plugin is not available in the container. See [DigitalOcean multi-node GPU docs](https://docs.digitalocean.com/products/kubernetes/how-to/configure-multinode-gpus/) for fabric configuration details.
+### 1. Container Image
 
-## RCCL Validation
+Build and push the custom slurmd image with ROCm/RCCL libraries:
+
+```bash
+make docker/build-slurmd
+docker login ghcr.io
+make docker/push-slurmd
+```
+
+This image is required because the upstream Slinky slurmd image does not include ROCm or RCCL. See [docker/slurmd-rocm/README.md](docker/slurmd-rocm/README.md) for details.
+
+### 2. Infrastructure
+
+Provision DOKS cluster, managed MySQL, managed NFS, and VPC:
+
+```bash
+make infra/apply
+```
+
+### 3. Prerequisites
+
+Install cert-manager (required by Slinky operator) and Prometheus/Grafana:
+
+```bash
+make prereqs/install
+```
+
+### 4. Storage
+
+Create NFS PV/PVC from Terraform outputs, used as shared storage (`/shared`) across login and worker pods:
+
+```bash
+make nfs/configure
+```
+
+### 5. RDMA Fabric
+
+Install Multus CNI and fabric NetworkAttachmentDefinitions for RoCE (RDMA over Converged Ethernet):
+
+```bash
+make fabric/install
+```
+
+Each GPU node has 8 fabric NICs (`fabric0`–`fabric7`). Multus attaches these into worker pods for GPU-to-GPU communication across nodes.
+
+### 6. Slurm Operator
+
+Install the Slinky operator with CRDs:
+
+```bash
+make slinky/install-operator
+```
+
+### 7. Slurm Cluster
+
+Creates the DB secret, image pull secret, generates Helm values, and deploys the Slurm cluster:
+
+```bash
+make slinky/install-slurm
+```
+
+### 8. GPU Discovery
+
+Discover GPU device paths on the GPU nodes and update the Slurm configuration:
+
+```bash
+make gpu/discover-gres
+make slinky/update-slurm
+```
+
+This must run after GPU nodes are ready. It deploys a probe pod to detect device paths (e.g., `/dev/dri/renderD[128,136,...]` for AMD) and saves the result to `gres.conf`, then `update-slurm` re-deploys with the updated config.
+
+### 9. Validation
+
+```bash
+make slurm/info            # sinfo, squeue, partitions
+make slurm/test-fabric     # verify fabric NICs and RDMA devices
+make status                # full component status
+```
+
+## Running RCCL Tests
 
 RCCL (ROCm Communication Collectives Library) validation confirms GPU-to-GPU communication is working over the RDMA fabric.
 
-### Prerequisites
-
-- Fabric deployed (`make fabric/install`)
-- Workers running the custom slurmd-rocm image (see [docker/slurmd-rocm/README.md](docker/slurmd-rocm/README.md))
-- Compute nodes idle (`sinfo` shows `idle` state)
+**Prerequisites**: fabric deployed (`make fabric/install`), workers running the custom slurmd-rocm image, compute nodes idle (`sinfo` shows `idle` state).
 
 ### Single-Node Test
 
@@ -159,21 +228,75 @@ ls /shared/output/
 cat /shared/output/allreduce-1node-*.out
 ```
 
-### Fabric Verification
-
-Confirm fabric NICs and RDMA devices are visible inside the worker pods:
+## Teardown
 
 ```bash
-make slurm/test-fabric
+make down
 ```
 
-This checks for `fabric0`–`fabric7` interfaces and runs `ibv_devices` on a worker.
+This runs the full teardown in reverse order: Slurm cluster, fabric, prerequisites, infrastructure.
 
-### Related Docs
+## Make Targets Reference
+
+```
+make help
+```
+
+| Target | Description |
+|--------|-------------|
+| **Lifecycle** | |
+| `up` | Full deploy: infra, prereqs, NFS, fabric, operator, Slurm |
+| `down` | Full teardown |
+| `status` | Show status of all components |
+| **Infrastructure** | |
+| `infra/init` | Initialize Terraform providers and backend |
+| `infra/plan` | Preview Terraform changes |
+| `infra/apply` | Provision DOKS, MySQL, NFS, VPC |
+| `infra/destroy` | Destroy all infrastructure |
+| `infra/output` | Print all Terraform outputs |
+| **Prerequisites** | |
+| `prereqs/install` | Install cert-manager and Prometheus |
+| `prereqs/status` | Check pod status across prerequisite namespaces |
+| `prereqs/uninstall` | Uninstall all prerequisites |
+| **NFS** | |
+| `nfs/configure` | Generate NFS PV/PVC from Terraform outputs |
+| `nfs/test` | Deploy busybox pod to verify NFS read/write |
+| `nfs/status` | Check PV/PVC binding status |
+| **Docker** | |
+| `docker/build-slurmd` | Build custom slurmd image with ROCm/RCCL |
+| `docker/push-slurmd` | Push slurmd image to registry |
+| **Fabric** | |
+| `fabric/install` | Install Multus + fabric NADs |
+| `fabric/install-multus` | Install Multus CNI plugin |
+| `fabric/install-nads` | Create fabric NetworkAttachmentDefinitions |
+| `fabric/status` | Check Multus and NAD status |
+| `fabric/uninstall` | Remove fabric NADs and Multus |
+| **GPU** | |
+| `gpu/discover-gres` | Discover GPU device paths and save gres.conf |
+| **Slinky / Slurm** | |
+| `slinky/install-operator` | Install Slinky operator with CRDs |
+| `slinky/configure` | Generate values-slurm.yaml from template |
+| `slinky/install-slurm` | Install Slurm cluster (creates secrets, configures, deploys) |
+| `slinky/update-slurm` | Helm upgrade Slurm with updated values |
+| `slinky/create-db-secret` | Create Slurm DB password secret |
+| `slinky/create-pull-secret` | Create image pull secret |
+| `slinky/status` | Show pods across slinky + slurm namespaces |
+| `slinky/uninstall` | Uninstall Slurm cluster, operator, CRDs |
+| `slinky/logs` | Tail operator and controller logs |
+| **Slurm Operations** | |
+| `slurm/shell` | Interactive shell on the login pod |
+| `slurm/info` | Show sinfo, squeue, partitions |
+| `slurm/test-fabric` | Verify fabric NICs and RDMA devices on workers |
+| `slurm/submit-rccl-1node` | Submit single-node RCCL all-reduce test |
+| `slurm/submit-rccl-2node` | Submit multi-node RCCL all-reduce test |
+| `slurm/submit-test` | Copy job scripts to NFS and submit test jobs |
+| `slurm/run-validation` | Run the full validation suite |
+| `slurm/test-restapi` | Test slurmrestd API endpoints |
+| **Observability** | |
+| `obs/dashboard` | Deploy Slurm Grafana dashboard |
+| `obs/grafana` | Port-forward Grafana to localhost:3000 |
+| `obs/prometheus` | Port-forward Prometheus to localhost:9090 |
+
+## Related Documentation
 
 - [docker/slurmd-rocm/README.md](docker/slurmd-rocm/README.md) — Custom container image build details
-- [DEV/rccl-doks-validation-runbook.md](DEV/rccl-doks-validation-runbook.md) — Full operational runbook for RCCL validation
-
-## Manual Guide
-
-For step-by-step manual deployment instructions, see [DEV/installation-guidance.md](DEV/installation-guidance.md).
