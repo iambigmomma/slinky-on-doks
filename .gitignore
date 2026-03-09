@@ -38,3 +38,9 @@ terraform.rc
 
 # Generated NFS manifest (contains real host/path from Terraform)
 manifests/nfs-pv.yaml
+
+# Generated Slurm values (contains real DB hostname from Terraform)
+helm/slinky/values-slurm.yaml
+
+# GPU discovery output (machine-specific)
+helm/slinky/.gres-conf-line

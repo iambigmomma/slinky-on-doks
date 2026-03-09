@@ -4,6 +4,11 @@ TF := terraform -chdir=terraform
 
 CLUSTER_NAME := $(shell $(TF) output -raw cluster_name 2>/dev/null || echo "slinky-poc")
 
+ifndef SLURMD_IMAGE
+  $(warning SLURMD_IMAGE is not set — defaulting to placeholder. Set via: export SLURMD_IMAGE=ghcr.io/yourorg/slurmd-rocm:25.11)
+  SLURMD_IMAGE := slurmd-rocm:latest
+endif
+
 # ── Infrastructure (Terraform) ───────────────────────────────────────────────
 
 .PHONY: infra/init
@@ -90,6 +95,75 @@ nfs/status: ## Check PV/PVC binding status
 	@echo "=== PersistentVolumeClaims ==="
 	kubectl get pvc -A
 
+# ── Docker (Custom slurmd Image) ─────────────────────────────────────────────
+
+.PHONY: docker/build-slurmd
+docker/build-slurmd: ## Build custom slurmd image with ROCm/RCCL
+	docker build -t $(SLURMD_IMAGE) docker/slurmd-rocm/
+
+.PHONY: docker/push-slurmd
+docker/push-slurmd: ## Push slurmd image (login to your registry first)
+	docker push $(SLURMD_IMAGE)
+
+# ── Fabric (Multus + NetworkAttachmentDefinitions) ───────────────────────────
+
+.PHONY: fabric/install-multus
+fabric/install-multus: ## Install Multus CNI plugin
+	kubectl apply -f https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/master/deployments/multus-daemonset-thick.yml
+	@echo "Waiting for Multus pods..."
+	kubectl rollout status daemonset/kube-multus-ds -n kube-system --timeout=120s
+
+.PHONY: fabric/install-nads
+fabric/install-nads: ## Create fabric NetworkAttachmentDefinitions in slurm namespace
+	kubectl apply -f manifests/fabric-nads.yaml --namespace=slurm
+
+.PHONY: fabric/install
+fabric/install: fabric/install-multus fabric/install-nads ## Install Multus + NADs
+
+.PHONY: fabric/status
+fabric/status: ## Check Multus and NAD status
+	@echo "=== Multus Pods ==="
+	kubectl get pods -n kube-system -l app=multus
+	@echo ""
+	@echo "=== NetworkAttachmentDefinitions ==="
+	kubectl get net-attach-def -n slurm
+
+.PHONY: fabric/uninstall
+fabric/uninstall: ## Remove fabric NADs and Multus
+	-kubectl delete -f manifests/fabric-nads.yaml --namespace=slurm
+	-kubectl delete -f https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/master/deployments/multus-daemonset-thick.yml
+
+# ── GPU Discovery ────────────────────────────────────────────────────────────
+
+.PHONY: gpu/discover-gres
+gpu/discover-gres: ## Discover GPU device paths via debug pod and save gres.conf line
+	@kubectl delete pod gpu-probe -n slurm --ignore-not-found 2>/dev/null && \
+	GPU_VENDOR=$$($(TF) output -raw gpu_vendor) && \
+	GPU_TAINT_KEY=$$($(TF) output -raw gpu_taint_key) && \
+	GPU_RESOURCE_KEY="$$GPU_VENDOR.com/gpu" && \
+	echo "Deploying GPU probe pod (vendor=$$GPU_VENDOR)..." && \
+	sed "s|__GPU_TAINT_KEY__|$$GPU_TAINT_KEY|g; s|__GPU_RESOURCE_KEY__|$$GPU_RESOURCE_KEY|g" \
+		manifests/gpu-probe-pod.yaml.tpl | kubectl apply -f - && \
+	echo "Waiting for gpu-probe pod..." && \
+	kubectl wait --for=condition=Ready pod/gpu-probe -n slurm --timeout=120s && \
+	if [ "$$GPU_VENDOR" = "amd" ]; then \
+		NUMS=$$(kubectl exec -n slurm gpu-probe -- sh -c \
+			'for d in /sys/class/drm/card*/device/vendor; do \
+				n=$$(echo $$d | grep -oP "card\K[0-9]+"); \
+				echo $$((n + 128)); \
+			done | sort -n | paste -sd, -') && \
+		GRES_LINE="Name=gpu File=/dev/dri/renderD[$$NUMS]"; \
+	else \
+		NUMS=$$(kubectl exec -n slurm gpu-probe -- sh -c \
+			'ls -1 /dev/nvidia[0-9]* 2>/dev/null | sed "s|.*/nvidia||" | sort -n | paste -sd, -') && \
+		GRES_LINE="Name=gpu File=/dev/nvidia[$$NUMS]"; \
+	fi && \
+	kubectl delete pod gpu-probe -n slurm --ignore-not-found && \
+	echo "$$GRES_LINE" > helm/slinky/.gres-conf-line && \
+	echo "" && echo "Discovered gres.conf:" && \
+	echo "  $$GRES_LINE" && \
+	echo "(Saved to helm/slinky/.gres-conf-line)"
+
 # ── Slinky / Slurm ──────────────────────────────────────────────────────────
 
 .PHONY: slinky/create-db-secret
@@ -114,11 +188,29 @@ slinky/configure: ## Generate values-slurm.yaml from template using Terraform ou
 	GPU_VENDOR=$$($(TF) output -raw gpu_vendor) && \
 	GPU_TAINT_KEY=$$($(TF) output -raw gpu_taint_key) && \
 	GPU_NODE_COUNT=$$($(TF) output -raw gpu_node_count) && \
-	sed "s|__DB_HOST__|$$DB_HOST|g; s|__GPU_VENDOR__|$$GPU_VENDOR|g; s|__GPU_TAINT_KEY__|$$GPU_TAINT_KEY|g; s|__GPU_NODE_COUNT__|$$GPU_NODE_COUNT|g" \
+	IMG_REPO=$$(echo '$(SLURMD_IMAGE)' | sed 's|:[^:]*$$||') && \
+	IMG_TAG=$$(echo '$(SLURMD_IMAGE)' | sed 's|.*:||') && \
+	if [ -f helm/slinky/.gres-conf-line ]; then \
+		GRES_LINE=$$(cat helm/slinky/.gres-conf-line); \
+	else \
+		echo "WARNING: helm/slinky/.gres-conf-line not found. Run 'make gpu/discover-gres' first." >&2; \
+		GRES_LINE="Name=gpu File=/dev/UNKNOWN — run: make gpu/discover-gres"; \
+	fi && \
+	sed "s|__DB_HOST__|$$DB_HOST|g; s|__GPU_VENDOR__|$$GPU_VENDOR|g; s|__GPU_TAINT_KEY__|$$GPU_TAINT_KEY|g; s|__GPU_NODE_COUNT__|$$GPU_NODE_COUNT|g; s|__SLURMD_IMAGE_REPO__|$$IMG_REPO|g; s|__SLURMD_IMAGE_TAG__|$$IMG_TAG|g; s|__GRES_CONF_LINE__|$$GRES_LINE|g" \
 		helm/slinky/values-slurm.yaml.tpl > helm/slinky/values-slurm.yaml
 
+.PHONY: slinky/create-pull-secret
+slinky/create-pull-secret: ## Create image pull secret (set REGISTRY_USER and REGISTRY_PASSWORD)
+	@IMG_SERVER=$$(echo '$(SLURMD_IMAGE)' | cut -d/ -f1) && \
+	kubectl create secret docker-registry slurmd-pull-secret \
+		--docker-server="$$IMG_SERVER" \
+		--docker-username="$$REGISTRY_USER" \
+		--docker-password="$$REGISTRY_PASSWORD" \
+		--namespace=slurm \
+		--dry-run=client -o yaml | kubectl apply -f -
+
 .PHONY: slinky/install-slurm
-slinky/install-slurm: slinky/create-db-secret slinky/configure ## Install Slurm cluster
+slinky/install-slurm: slinky/create-db-secret slinky/create-pull-secret slinky/configure ## Install Slurm cluster
 	helm upgrade --install slurm \
 		oci://ghcr.io/slinkyproject/charts/slurm \
 		--values helm/slinky/values-slurm.yaml \
@@ -176,6 +268,14 @@ slurm/info: ## Run sinfo, squeue, and show partitions
 	@echo "=== partitions ==="
 	kubectl exec -n slurm deploy/slurm-login-slinky -- scontrol show partitions
 
+.PHONY: slurm/test-fabric
+slurm/test-fabric: ## Verify fabric NICs and RDMA devices on GPU workers
+	@echo "=== Fabric NICs ==="
+	kubectl exec -n slurm sts/slurm-worker-slinky -c slurmd -- ip link show | grep -E 'fabric[0-7]' || echo "No fabric interfaces found"
+	@echo ""
+	@echo "=== RDMA Devices ==="
+	kubectl exec -n slurm sts/slurm-worker-slinky -c slurmd -- ibv_devices 2>/dev/null || echo "ibv_devices not available"
+
 .PHONY: slurm/submit-test
 slurm/submit-test: ## Copy job scripts to NFS and submit basic test jobs
 	scripts/submit-test-jobs.sh
@@ -183,6 +283,16 @@ slurm/submit-test: ## Copy job scripts to NFS and submit basic test jobs
 .PHONY: slurm/run-validation
 slurm/run-validation: ## Run the full validation suite
 	scripts/run-validation-suite.sh
+
+.PHONY: slurm/submit-rccl-1node
+slurm/submit-rccl-1node: ## Submit single-node RCCL all-reduce test
+	kubectl cp jobs/rccl-allreduce-1node.sh slurm/deploy/slurm-login-slinky:/shared/jobs/ -c login
+	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/rccl-allreduce-1node.sh
+
+.PHONY: slurm/submit-rccl-2node
+slurm/submit-rccl-2node: ## Submit multi-node RCCL all-reduce test
+	kubectl cp jobs/rccl-allreduce-2node.sh slurm/deploy/slurm-login-slinky:/shared/jobs/ -c login
+	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/rccl-allreduce-2node.sh
 
 .PHONY: slurm/test-restapi
 slurm/test-restapi: ## Test slurmrestd API endpoints
@@ -207,13 +317,13 @@ obs/prometheus: ## Port-forward Prometheus to localhost:9090
 # ── Lifecycle / Compound Targets ──────────────────────────────────────────────
 
 .PHONY: up
-up: infra/apply prereqs/install nfs/configure slinky/install-operator slinky/install-slurm ## Full deploy: infra -> prereqs -> nfs -> slinky
+up: infra/apply prereqs/install nfs/configure fabric/install slinky/install-operator slinky/install-slurm ## Full deploy: infra -> prereqs -> nfs -> fabric -> slinky
 
 .PHONY: down
-down: slinky/uninstall prereqs/uninstall infra/destroy ## Full teardown: slinky -> prereqs -> infra
+down: slinky/uninstall fabric/uninstall prereqs/uninstall infra/destroy ## Full teardown: slinky -> fabric -> prereqs -> infra
 
 .PHONY: status
-status: infra/output prereqs/status nfs/status slinky/status slurm/info ## Show status of all components
+status: infra/output prereqs/status nfs/status fabric/status slinky/status slurm/info ## Show status of all components
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 
