@@ -27,6 +27,13 @@ infra/apply: ## Provision DOKS, MySQL, NFS, VPC
 infra/destroy: ## Destroy all infrastructure
 	$(TF) destroy -auto-approve
 
+.PHONY: infra/kubeconfig
+infra/kubeconfig: ## Save kubeconfig from Terraform output to ~/.kube/config
+	@mkdir -p ~/.kube
+	@$(TF) output -raw kubeconfig > ~/.kube/config
+	@echo "Kubeconfig saved to ~/.kube/config"
+	@kubectl get nodes
+
 .PHONY: infra/output
 infra/output: ## Print all Terraform outputs
 	$(TF) output
@@ -319,7 +326,7 @@ obs/prometheus: ## Port-forward Prometheus to localhost:9090
 # ── Lifecycle / Compound Targets ──────────────────────────────────────────────
 
 .PHONY: up
-up: infra/apply prereqs/install nfs/configure fabric/install slinky/install-operator slinky/install-slurm ## Full deploy: infra -> prereqs -> nfs -> fabric -> slinky
+up: infra/apply infra/kubeconfig prereqs/install nfs/configure fabric/install slinky/install-operator slinky/install-slurm ## Full deploy: infra -> kubeconfig -> prereqs -> nfs -> fabric -> slinky
 
 .PHONY: down
 down: slinky/uninstall fabric/uninstall prereqs/uninstall infra/destroy ## Full teardown: slinky -> fabric -> prereqs -> infra

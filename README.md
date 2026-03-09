@@ -89,7 +89,7 @@ make docker/build-slurmd
 docker login ghcr.io   # or your registry
 make docker/push-slurmd
 
-# 2. Deploy everything (infra, prereqs, NFS, fabric, operator, Slurm)
+# 2. Deploy everything (infra, kubeconfig, prereqs, NFS, fabric, operator, Slurm)
 make up
 
 # 3. Discover GPUs and update Slurm config
@@ -123,7 +123,17 @@ Provision DOKS cluster, managed MySQL, managed NFS, and VPC:
 make infra/apply
 ```
 
-### 3. Prerequisites
+### 3. Kubeconfig
+
+Save the cluster kubeconfig so `kubectl` and `helm` can reach the new cluster. This extracts the kubeconfig from Terraform state (DOKS clusters created by Terraform are not visible to `doctl`):
+
+```bash
+make infra/kubeconfig
+```
+
+> **Note**: `make up` runs this automatically after `infra/apply`.
+
+### 4. Prerequisites
 
 Install cert-manager (required by Slinky operator) and Prometheus/Grafana:
 
@@ -131,7 +141,7 @@ Install cert-manager (required by Slinky operator) and Prometheus/Grafana:
 make prereqs/install
 ```
 
-### 4. Storage
+### 5. Storage
 
 Create NFS PV/PVC from Terraform outputs, used as shared storage (`/shared`) across login and worker pods:
 
@@ -139,7 +149,7 @@ Create NFS PV/PVC from Terraform outputs, used as shared storage (`/shared`) acr
 make nfs/configure
 ```
 
-### 5. RDMA Fabric
+### 6. RDMA Fabric
 
 Install Multus CNI and fabric NetworkAttachmentDefinitions for RoCE (RDMA over Converged Ethernet):
 
@@ -149,7 +159,7 @@ make fabric/install
 
 Each GPU node has 8 fabric NICs (`fabric0`–`fabric7`). Multus attaches these into worker pods for GPU-to-GPU communication across nodes.
 
-### 6. Slurm Operator
+### 7. Slurm Operator
 
 Install the Slinky operator with CRDs:
 
@@ -157,7 +167,7 @@ Install the Slinky operator with CRDs:
 make slinky/install-operator
 ```
 
-### 7. Slurm Cluster
+### 8. Slurm Cluster
 
 Creates the DB secret, image pull secret, generates Helm values, and deploys the Slurm cluster:
 
@@ -165,7 +175,7 @@ Creates the DB secret, image pull secret, generates Helm values, and deploys the
 make slinky/install-slurm
 ```
 
-### 8. GPU Discovery
+### 9. GPU Discovery
 
 Discover GPU device paths on the GPU nodes and update the Slurm configuration:
 
@@ -176,7 +186,7 @@ make slinky/update-slurm
 
 This must run after GPU nodes are ready. It deploys a probe pod to detect device paths (e.g., `/dev/dri/renderD[128,136,...]` for AMD) and saves the result to `gres.conf`, then `update-slurm` re-deploys with the updated config.
 
-### 9. Validation
+### 10. Validation
 
 ```bash
 make slurm/info            # sinfo, squeue, partitions
@@ -252,6 +262,7 @@ make help
 | `infra/init` | Initialize Terraform providers and backend |
 | `infra/plan` | Preview Terraform changes |
 | `infra/apply` | Provision DOKS, MySQL, NFS, VPC |
+| `infra/kubeconfig` | Save kubeconfig from Terraform to ~/.kube/config |
 | `infra/destroy` | Destroy all infrastructure |
 | `infra/output` | Print all Terraform outputs |
 | **Prerequisites** | |
