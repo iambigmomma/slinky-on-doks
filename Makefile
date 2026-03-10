@@ -94,6 +94,16 @@ nfs/test: ## Deploy busybox pod to verify NFS read/write
 	@echo "Cleaning up..."
 	kubectl delete pod nfs-test -n slurm --ignore-not-found
 
+.PHONY: nfs/gpu-tuner
+nfs/gpu-tuner: ## Deploy GPU network tuner DaemonSet (MTU 9000 + TCP buffers)
+	kubectl apply -f manifests/gpu-network-tuner.yaml
+	@echo "Waiting for gpu-network-tuner rollout..."
+	kubectl rollout status daemonset/gpu-network-tuner -n kube-system --timeout=120s
+
+.PHONY: nfs/gpu-tuner-uninstall
+nfs/gpu-tuner-uninstall: ## Remove GPU network tuner DaemonSet
+	-kubectl delete -f manifests/gpu-network-tuner.yaml
+
 .PHONY: nfs/status
 nfs/status: ## Check PV/PVC binding status
 	@echo "=== PersistentVolumes ==="
@@ -326,10 +336,10 @@ obs/prometheus: ## Port-forward Prometheus to localhost:9090
 # ── Lifecycle / Compound Targets ──────────────────────────────────────────────
 
 .PHONY: up
-up: infra/apply infra/kubeconfig prereqs/install nfs/configure fabric/install slinky/install-operator slinky/install-slurm ## Full deploy: infra -> kubeconfig -> prereqs -> nfs -> fabric -> slinky
+up: infra/apply infra/kubeconfig nfs/gpu-tuner prereqs/install nfs/configure fabric/install slinky/install-operator slinky/install-slurm ## Full deploy: infra -> kubeconfig -> gpu-tuner -> prereqs -> nfs -> fabric -> slinky
 
 .PHONY: down
-down: slinky/uninstall fabric/uninstall prereqs/uninstall infra/destroy ## Full teardown: slinky -> fabric -> prereqs -> infra
+down: slinky/uninstall fabric/uninstall prereqs/uninstall nfs/gpu-tuner-uninstall infra/destroy ## Full teardown: slinky -> fabric -> prereqs -> gpu-tuner -> infra
 
 .PHONY: status
 status: infra/output prereqs/status nfs/status fabric/status slinky/status slurm/info ## Show status of all components

@@ -33,6 +33,12 @@ resource "digitalocean_kubernetes_node_pool" "gpu" {
   name       = "gpu"
   size       = var.gpu_node_size
   node_count = var.gpu_node_count
+
+  taint {
+    key    = "node.digitalocean.com/network-not-tuned"
+    value  = "true"
+    effect = "NoSchedule"
+  }
 }
 
 # ── MySQL Cluster ────────────────────────────────────────────────────────────

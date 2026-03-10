@@ -164,6 +164,36 @@ helm install prometheus prometheus-community/kube-prometheus-stack \
 
 ## 4. NFS Shared Storage
 
+### Optimize NFS Performance on GPU Nodes
+
+GPU nodes support jumbo frames (MTU 9000) on the VPC interface, but if workload pods mount NFS before the interface is tuned, TCP connections negotiate at the default 1500 MTU and are never renegotiated — resulting in degraded throughput for the lifetime of those mounts.
+
+To prevent this, deploy a DaemonSet that tunes network settings on GPU nodes **before** any workloads schedule. The DaemonSet uses a startup taint to hold off other pods until tuning completes. See [Optimize NFS Performance on GPU Nodes](https://docs.digitalocean.com/products/kubernetes/how-to/use-nfs-storage/#optimize-nfs-performance-on-gpu-nodes) for full details.
+
+**Step 1** — Add a startup taint to the GPU node pool so that workloads cannot schedule until tuning completes. In the [cloud console](https://docs.digitalocean.com/products/kubernetes/how-to/add-node-pools/), edit the GPU node pool and add the taint:
+
+- **Key**: `node.digitalocean.com/network-not-tuned`
+- **Value**: `true`
+- **Effect**: `NoSchedule`
+
+Or via the CLI:
+
+```bash
+doctl kubernetes cluster node-pool update <cluster-id> <gpu-pool-id> \
+  --taint "node.digitalocean.com/network-not-tuned=true:NoSchedule"
+```
+
+**Step 2** — Apply the GPU network tuner DaemonSet (includes RBAC resources):
+
+```bash
+kubectl apply -f manifests/gpu-network-tuner.yaml
+kubectl rollout status daemonset/gpu-network-tuner -n kube-system --timeout=120s
+```
+
+The DaemonSet runs two init containers on each GPU node: the first sets TCP buffer sysctls and MTU 9000 via netplan, the second removes the startup taint so workloads can schedule. Once complete, all NFS mounts will negotiate at optimal MTU.
+
+### Create NFS PV and PVC
+
 The official Slinky guide does not cover shared storage. For job scripts, input data, and output files, create a PersistentVolume backed by the managed NFS and a PersistentVolumeClaim that login and worker pods will mount. `server` and `path` values come form the NFS **Mount Source** in the console.
 
 ```yaml
