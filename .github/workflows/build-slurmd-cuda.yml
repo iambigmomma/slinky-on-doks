@@ -1,0 +1,64 @@
+name: Build slurmd-cuda
+
+on:
+  push:
+    branches: ["main", "feat/nvidia-b300-poc"]
+    paths:
+      - "docker/slurmd-cuda/**"
+  workflow_dispatch:
+    inputs:
+      cuda_maj:
+        description: "CUDA major version"
+        default: "12"
+      cuda_min:
+        description: "CUDA minor version"
+        default: "4"
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/slurmd-cuda
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set CUDA version args
+        id: cuda
+        run: |
+          MAJ="${{ github.event.inputs.cuda_maj || '12' }}"
+          MIN="${{ github.event.inputs.cuda_min || '4' }}"
+          echo "maj=${MAJ}" >> $GITHUB_OUTPUT
+          echo "min=${MIN}" >> $GITHUB_OUTPUT
+          echo "tag=25.11-cuda${MAJ}.${MIN}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: docker/slurmd-cuda
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.cuda.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          build-args: |
+            CUDA_MAJ=${{ steps.cuda.outputs.maj }}
+            CUDA_MIN=${{ steps.cuda.outputs.min }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
