@@ -41,8 +41,10 @@ infra/output: ## Print all Terraform outputs
 .PHONY: infra/import-cluster
 infra/import-cluster: ## Import existing DOKS cluster into Terraform state (set CLUSTER_NAME=<name>)
 	@echo "Looking up cluster: $(CLUSTER_NAME)"
-	@CLUSTER_ID=$$(doctl kubernetes cluster get $(CLUSTER_NAME) --format ID --no-header) && \
-	VPC_ID=$$(doctl kubernetes cluster get $(CLUSTER_NAME) --format VPCUuid --no-header) && \
+	@CLUSTER_ID=$$(doctl kubernetes cluster get $(CLUSTER_NAME) --format ID --no-header 2>/dev/null) && \
+	[ -n "$$CLUSTER_ID" ] || { echo "ERROR: cluster '$(CLUSTER_NAME)' not found. Run: doctl kubernetes cluster list"; exit 1; } && \
+	VPC_ID=$$(doctl kubernetes cluster get $(CLUSTER_NAME) -o json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['vpc_uuid'])") && \
+	[ -n "$$VPC_ID" ] || { echo "ERROR: could not read VPC UUID for cluster '$(CLUSTER_NAME)'"; exit 1; } && \
 	echo "Importing cluster $$CLUSTER_ID and VPC $$VPC_ID..." && \
 	$(TF) import digitalocean_kubernetes_cluster.main $$CLUSTER_ID || true && \
 	$(TF) import digitalocean_vpc.main $$VPC_ID || true && \
