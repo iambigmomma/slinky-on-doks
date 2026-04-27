@@ -303,6 +303,7 @@ make help
 |--------|-------------|
 | **Lifecycle** | |
 | `up` | Full deploy: infra, prereqs, NFS, fabric, operator, Slurm |
+| `up-from-existing` | Deploy Slinky on existing DOKS cluster (run `make infra/import-cluster` first) |
 | `down` | Full teardown |
 | `status` | Show status of all components |
 | **Infrastructure** | |
@@ -310,6 +311,7 @@ make help
 | `infra/plan` | Preview Terraform changes |
 | `infra/apply` | Provision DOKS, MySQL, NFS, VPC |
 | `infra/kubeconfig` | Save kubeconfig from Terraform to ~/.kube/config |
+| `infra/import-cluster` | Import existing DOKS cluster into Terraform state (set `CLUSTER_NAME`) |
 | `infra/destroy` | Destroy all infrastructure |
 | `infra/output` | Print all Terraform outputs |
 | **Prerequisites** | |

@@ -38,6 +38,16 @@ infra/kubeconfig: ## Save kubeconfig from Terraform output to ~/.kube/config
 infra/output: ## Print all Terraform outputs
 	$(TF) output
 
+.PHONY: infra/import-cluster
+infra/import-cluster: ## Import existing DOKS cluster into Terraform state (set CLUSTER_NAME=<name>)
+	@echo "Looking up cluster: $(CLUSTER_NAME)"
+	@CLUSTER_ID=$$(doctl kubernetes cluster get $(CLUSTER_NAME) --format ID --no-header) && \
+	VPC_ID=$$(doctl kubernetes cluster get $(CLUSTER_NAME) --format VPCUuid --no-header) && \
+	echo "Importing cluster $$CLUSTER_ID and VPC $$VPC_ID..." && \
+	$(TF) import digitalocean_kubernetes_cluster.main $$CLUSTER_ID || true && \
+	$(TF) import digitalocean_vpc.main $$VPC_ID || true && \
+	echo "Done. Run 'make infra/plan' to verify no cluster changes, then 'make up-from-existing'."
+
 # ── Prerequisites (Helm + Manifests) ─────────────────────────────────────────
 
 .PHONY: prereqs/install
@@ -73,8 +83,8 @@ prereqs/uninstall: ## Uninstall all prerequisites
 
 .PHONY: nfs/configure
 nfs/configure: ## Generate NFS PV from template, create namespace, apply PV + PVC
-	@NFS_HOST=$$($(TF) output -raw nfs_host) && \
-	NFS_PATH=$$($(TF) output -raw nfs_mount_path) && \
+	@NFS_HOST=$${NFS_HOST:-$$($(TF) output -raw nfs_host)} && \
+	NFS_PATH=$${NFS_PATH:-$$($(TF) output -raw nfs_mount_path)} && \
 	sed "s|__NFS_HOST__|$$NFS_HOST|g; s|__NFS_PATH__|$$NFS_PATH|g" \
 		manifests/nfs-pv.yaml.tpl > manifests/nfs-pv.yaml && \
 	kubectl apply -f manifests/slurm-namespace.yaml && \
@@ -159,8 +169,8 @@ fabric/uninstall: ## Remove fabric NADs and Multus
 .PHONY: gpu/discover-gres
 gpu/discover-gres: ## Discover GPU device paths via debug pod and save gres.conf line
 	@kubectl delete pod gpu-probe -n slurm --ignore-not-found 2>/dev/null && \
-	GPU_VENDOR=$$($(TF) output -raw gpu_vendor) && \
-	GPU_TAINT_KEY=$$($(TF) output -raw gpu_taint_key) && \
+	GPU_VENDOR=$${GPU_VENDOR:-$$($(TF) output -raw gpu_vendor)} && \
+	GPU_TAINT_KEY=$${GPU_TAINT_KEY:-$$($(TF) output -raw gpu_taint_key)} && \
 	GPU_RESOURCE_KEY="$$GPU_VENDOR.com/gpu" && \
 	echo "Deploying GPU probe pod (vendor=$$GPU_VENDOR)..." && \
 	sed "s|__GPU_TAINT_KEY__|$$GPU_TAINT_KEY|g; s|__GPU_RESOURCE_KEY__|$$GPU_RESOURCE_KEY|g" \
@@ -189,7 +199,7 @@ gpu/discover-gres: ## Discover GPU device paths via debug pod and save gres.conf
 
 .PHONY: slinky/create-db-secret
 slinky/create-db-secret: ## Create Slurm DB password secret from Terraform output
-	@DB_PASS=$$($(TF) output -raw db_password) && \
+	@DB_PASS=$${DB_PASSWORD:-$$($(TF) output -raw db_password)} && \
 	kubectl create secret generic slurm-db-password \
 		--namespace slurm \
 		--from-literal=password="$$DB_PASS" \
@@ -205,10 +215,10 @@ slinky/install-operator: ## Install slurm-operator with CRDs
 
 .PHONY: slinky/configure
 slinky/configure: ## Generate values-slurm.yaml from template using Terraform outputs
-	@DB_HOST=$$($(TF) output -raw db_host) && \
-	GPU_VENDOR=$$($(TF) output -raw gpu_vendor) && \
-	GPU_TAINT_KEY=$$($(TF) output -raw gpu_taint_key) && \
-	GPU_NODE_COUNT=$$($(TF) output -raw gpu_node_count) && \
+	@DB_HOST=$${DB_HOST:-$$($(TF) output -raw db_host)} && \
+	GPU_VENDOR=$${GPU_VENDOR:-$$($(TF) output -raw gpu_vendor)} && \
+	GPU_TAINT_KEY=$${GPU_TAINT_KEY:-$$($(TF) output -raw gpu_taint_key)} && \
+	GPU_NODE_COUNT=$${GPU_NODE_COUNT:-$$($(TF) output -raw gpu_node_count)} && \
 	IMG_REPO=$$(echo '$(SLURMD_IMAGE)' | sed 's|:[^:]*$$||') && \
 	IMG_TAG=$$(echo '$(SLURMD_IMAGE)' | sed 's|.*:||') && \
 	if [ -f helm/slinky/.gres-conf-line ]; then \
@@ -353,6 +363,9 @@ obs/prometheus: ## Port-forward Prometheus to localhost:9090
 
 .PHONY: up
 up: infra/apply infra/kubeconfig nfs/gpu-tuner prereqs/install nfs/configure fabric/install slinky/install-operator slinky/install-slurm ## Full deploy: infra -> kubeconfig -> gpu-tuner -> prereqs -> nfs -> fabric -> slinky
+
+.PHONY: up-from-existing
+up-from-existing: infra/apply infra/kubeconfig nfs/gpu-tuner prereqs/install nfs/configure fabric/install slinky/install-operator slinky/install-slurm ## Deploy Slinky on existing DOKS cluster (run make infra/import-cluster first)
 
 .PHONY: down
 down: slinky/uninstall fabric/uninstall prereqs/uninstall nfs/gpu-tuner-uninstall infra/destroy ## Full teardown: slinky -> fabric -> prereqs -> gpu-tuner -> infra
