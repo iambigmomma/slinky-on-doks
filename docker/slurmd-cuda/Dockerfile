@@ -17,8 +17,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libopenmpi-dev \
         openmpi-bin \
-        libnccl2 \
-        libnccl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
