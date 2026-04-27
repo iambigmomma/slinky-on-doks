@@ -106,8 +106,8 @@ print('vpc_id:', d['vpc_uuid'])
 
 Example output:
 ```
-cluster_id: 1fed456f-e888-4792-8c3c-a33720dfdad3
-vpc_id:     0dec1cac-e33a-4ced-b2f0-1a36a2f67335
+cluster_id: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+vpc_id:     yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
 ```
 
 > Don't know your cluster name? Run `doctl kubernetes cluster list`.
