@@ -115,8 +115,12 @@ nfs/status: ## Check PV/PVC binding status
 # ── Docker (Custom slurmd Image) ─────────────────────────────────────────────
 
 .PHONY: docker/build-slurmd
-docker/build-slurmd: ## Build custom slurmd image with ROCm/RCCL
+docker/build-slurmd: ## Build custom slurmd image with ROCm/RCCL (AMD)
 	docker build -t $(SLURMD_IMAGE) docker/slurmd-rocm/
+
+.PHONY: docker/build-slurmd-cuda
+docker/build-slurmd-cuda: ## Build custom slurmd image with CUDA/NCCL (NVIDIA)
+	docker build -t $(SLURMD_IMAGE) docker/slurmd-cuda/
 
 .PHONY: docker/push-slurmd
 docker/push-slurmd: ## Push slurmd image (login to your registry first)
@@ -308,10 +312,22 @@ slurm/submit-rccl-1node: ## Submit single-node RCCL all-reduce test
 	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/rccl-allreduce-1node.sh
 
 .PHONY: slurm/submit-rccl-2node
-slurm/submit-rccl-2node: ## Submit multi-node RCCL all-reduce test
+slurm/submit-rccl-2node: ## Submit multi-node RCCL all-reduce test (AMD)
 	kubectl exec -i -n slurm deploy/slurm-login-slinky -c login -- tee /shared/jobs/rccl-allreduce-2node.sh < jobs/rccl-allreduce-2node.sh > /dev/null
 	kubectl exec -n slurm deploy/slurm-login-slinky -c login -- chmod +x /shared/jobs/rccl-allreduce-2node.sh
 	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/rccl-allreduce-2node.sh
+
+.PHONY: slurm/submit-nccl-1node
+slurm/submit-nccl-1node: ## Submit single-node NCCL all-reduce test (NVIDIA)
+	kubectl exec -i -n slurm deploy/slurm-login-slinky -c login -- tee /shared/jobs/nccl-allreduce-1node.sh < jobs/nccl-allreduce-1node.sh > /dev/null
+	kubectl exec -n slurm deploy/slurm-login-slinky -c login -- chmod +x /shared/jobs/nccl-allreduce-1node.sh
+	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/nccl-allreduce-1node.sh
+
+.PHONY: slurm/submit-nccl-2node
+slurm/submit-nccl-2node: ## Submit multi-node NCCL all-reduce test (NVIDIA)
+	kubectl exec -i -n slurm deploy/slurm-login-slinky -c login -- tee /shared/jobs/nccl-allreduce-2node.sh < jobs/nccl-allreduce-2node.sh > /dev/null
+	kubectl exec -n slurm deploy/slurm-login-slinky -c login -- chmod +x /shared/jobs/nccl-allreduce-2node.sh
+	kubectl exec -n slurm deploy/slurm-login-slinky -- sbatch /shared/jobs/nccl-allreduce-2node.sh
 
 .PHONY: slurm/test-restapi
 slurm/test-restapi: ## Test slurmrestd API endpoints

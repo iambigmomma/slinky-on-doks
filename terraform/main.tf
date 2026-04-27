@@ -29,6 +29,7 @@ resource "digitalocean_kubernetes_cluster" "main" {
 # ── GPU Node Pool ─────────────────────────────────────────────────────────────
 
 resource "digitalocean_kubernetes_node_pool" "gpu" {
+  count      = var.gpu_node_count > 0 ? 1 : 0
   cluster_id = digitalocean_kubernetes_cluster.main.id
   name       = "gpu"
   size       = var.gpu_node_size
@@ -81,4 +82,8 @@ resource "digitalocean_nfs" "shared" {
   size             = var.nfs_size_gib
   vpc_id           = digitalocean_vpc.main.id
   performance_tier = var.nfs_performance_tier
+
+  lifecycle {
+    ignore_changes = [performance_tier]
+  }
 }
