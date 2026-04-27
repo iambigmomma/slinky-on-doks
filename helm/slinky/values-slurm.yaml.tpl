@@ -1,8 +1,14 @@
 # Slurm Cluster on DOKS — GPU worker values
 # Generated from values-slurm.yaml.tpl by `make slinky/configure`
 
-# ── Controller (slurmctld) ───────────────────────────────────────────────────
+# ── Image tag overrides (chart default 25.11-ubuntu24.04 does not exist; use patch release)
 controller:
+  slurmctld:
+    image:
+      tag: "25.11.5-ubuntu24.04"
+  reconfigure:
+    image:
+      tag: "25.11.5-ubuntu24.04"
   extraConfMap:
     ReturnToService: 2
   metrics:
@@ -14,6 +20,9 @@ controller:
 
 # ── Accounting (slurmdbd) ───────────────────────────────────────────────────
 accounting:
+  slurmdbd:
+    image:
+      tag: "25.11.5-ubuntu24.04"
   enabled: true
   storageConfig:
     host: __DB_HOST__
@@ -29,6 +38,8 @@ loginsets:
   slinky:
     enabled: true
     login:
+      image:
+        tag: "25.11.5-ubuntu24.04"
       volumeMounts:
         - name: shared-nfs
           mountPath: /shared
@@ -41,6 +52,12 @@ loginsets:
       spec:
         type: ClusterIP
 
+
+# ── REST API (slurmrestd) ────────────────────────────────────────────────────
+restapi:
+  slurmrestd:
+    image:
+      tag: "25.11.5-ubuntu24.04"
 
 # ── Slurm GRes (auto-discovered by `make gpu/discover-gres`) ─────────────
 # Device paths are hardware-specific and discovered via a debug pod.
@@ -65,7 +82,7 @@ nodesets:
         tag: "__SLURMD_IMAGE_TAG__"
       resources:
         requests:
-          amd.com/gpu: 8
+          __GPU_VENDOR__.com/gpu: 8
           rdma/fabric0: 1
           rdma/fabric1: 1
           rdma/fabric2: 1
@@ -75,7 +92,7 @@ nodesets:
           rdma/fabric6: 1
           rdma/fabric7: 1
         limits:
-          amd.com/gpu: 8
+          __GPU_VENDOR__.com/gpu: 8
           rdma/fabric0: 1
           rdma/fabric1: 1
           rdma/fabric2: 1
