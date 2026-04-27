@@ -78,12 +78,64 @@ cp terraform/terraform.tfvars.example terraform/terraform.tfvars
 
 Set `gpu_vendor` in `terraform.tfvars` to match your GPU hardware:
 
-| GPU Family | `gpu_vendor` | Example `gpu_node_size` |
-|------------|-------------|------------------------|
-| NVIDIA H100 / B300 | `nvidia` | `gpu-h100x8-640gb` |
-| AMD MI300X | `amd` | `gpu-mi300x8-1920gb` |
+| GPU Family | `gpu_vendor` | `gpu_node_size` | Region |
+|------------|-------------|-----------------|--------|
+| NVIDIA B300 (8x) | `nvidia` | `gpu-b300x8-2304gb-fabric-contracted` | `ric1` |
+| NVIDIA H100 (8x) | `nvidia` | `gpu-h100x8-640gb` | `atl1` |
+| AMD MI300X (8x) | `amd` | `gpu-mi300x8-1920gb` | `atl1` |
 
 The Makefile derives the correct taint key (`nvidia.com/gpu` or `amd.com/gpu`) and node selector label automatically from this value.
+
+## Bring Your Own Cluster
+
+If you already have a DOKS cluster provisioned via the DO console or API, you can skip cluster creation and let Terraform provision only the Managed MySQL and Managed NFS dependencies.
+
+### What you need from the DO console
+
+| Value | Where to find it |
+|-------|-----------------|
+| Cluster ID | Manage → Kubernetes → click cluster → ID shown in the Overview tab |
+| VPC ID | Networking → VPC → click the VPC → ID shown in the Overview tab |
+
+### Setup
+
+**1. Configure tfvars with your existing IDs**
+
+```hcl
+# terraform/terraform.tfvars
+region       = "ric1"          # must match your cluster's region
+project_name = "slinky-poc"
+gpu_vendor   = "nvidia"
+
+existing_cluster_id = "abc-1234-..."   # your cluster ID
+existing_vpc_id     = "def-5678-..."   # your VPC ID
+```
+
+**2. Provision MySQL and NFS**
+
+```bash
+make infra/init
+make infra/apply   # creates only MySQL + NFS, cluster is untouched
+```
+
+**3. Get kubeconfig**
+
+```bash
+make infra/kubeconfig   # auto-detects external cluster and uses doctl
+```
+
+**4. Deploy Slinky**
+
+```bash
+export SLURMD_IMAGE=ghcr.io/your-org/slurmd-cuda:25.11-cuda12.6
+export REGISTRY_USER=your-registry-user
+export REGISTRY_PASSWORD=your-registry-token
+make up-from-existing
+```
+
+`make up-from-existing` is identical to `make up` but skips the infrastructure provisioning step — it assumes your cluster is already running and kubeconfig is configured.
+
+> **Note**: `DO_API_TOKEN` is accepted as an alias for `DIGITALOCEAN_TOKEN` — either env var works.
 
 ## Custom slurmd Image
 
@@ -151,6 +203,8 @@ Provision DOKS cluster, managed MySQL, managed NFS, and VPC:
 ```bash
 make infra/apply
 ```
+
+> **Already have a cluster?** See the [Bring Your Own Cluster](#bring-your-own-cluster) section — set `existing_cluster_id` and `existing_vpc_id` in `terraform.tfvars` and `terraform apply` will only create MySQL and NFS.
 
 ### 2. Kubeconfig
 
