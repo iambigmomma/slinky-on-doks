@@ -2,6 +2,11 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 TF := terraform -chdir=terraform
 
+# Accept DO_API_TOKEN as alias for DIGITALOCEAN_TOKEN (DigitalOcean SE convention)
+ifdef DO_API_TOKEN
+  export DIGITALOCEAN_TOKEN := $(DO_API_TOKEN)
+endif
+
 CLUSTER_NAME := $(shell $(TF) output -raw cluster_name 2>/dev/null || echo "slinky-poc")
 
 ifndef SLURMD_IMAGE
