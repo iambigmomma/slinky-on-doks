@@ -33,10 +33,15 @@ infra/destroy: ## Destroy all infrastructure
 	$(TF) destroy -auto-approve
 
 .PHONY: infra/kubeconfig
-infra/kubeconfig: ## Save kubeconfig from Terraform output to ~/.kube/config
+infra/kubeconfig: ## Save kubeconfig — from Terraform state, or via doctl for existing clusters
 	@mkdir -p ~/.kube
-	@$(TF) output -raw kubeconfig > ~/.kube/config
-	@echo "Kubeconfig saved to ~/.kube/config"
+	@KC=$$($(TF) output -raw kubeconfig 2>/dev/null) && \
+	if [ -n "$$KC" ]; then \
+		echo "$$KC" > ~/.kube/config && echo "Kubeconfig saved from Terraform."; \
+	else \
+		echo "Cluster is external — fetching kubeconfig via doctl..." && \
+		doctl kubernetes cluster kubeconfig save $(CLUSTER_NAME); \
+	fi
 	@kubectl get nodes
 
 .PHONY: infra/output
