@@ -7,12 +7,12 @@ on:
       - "docker/slurmd-cuda/**"
   workflow_dispatch:
     inputs:
-      cuda_maj:
-        description: "CUDA major version"
-        default: "12"
-      cuda_min:
-        description: "CUDA minor version"
-        default: "4"
+      cuda_image:
+        description: "NVIDIA CUDA devel base image"
+        default: "nvidia/cuda:12.6.3-devel-ubuntu24.04"
+      image_tag:
+        description: "Output image tag"
+        default: "25.11-cuda12.6"
 
 env:
   REGISTRY: ghcr.io
@@ -39,14 +39,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set CUDA version args
-        id: cuda
+      - name: Resolve tags
+        id: meta
         run: |
-          MAJ="${{ github.event.inputs.cuda_maj || '12' }}"
-          MIN="${{ github.event.inputs.cuda_min || '4' }}"
-          echo "maj=${MAJ}" >> $GITHUB_OUTPUT
-          echo "min=${MIN}" >> $GITHUB_OUTPUT
-          echo "tag=25.11-cuda${MAJ}.${MIN}" >> $GITHUB_OUTPUT
+          CUDA_IMAGE="${{ github.event.inputs.cuda_image || 'nvidia/cuda:12.6.3-devel-ubuntu24.04' }}"
+          IMAGE_TAG="${{ github.event.inputs.image_tag || '25.11-cuda12.6' }}"
+          echo "cuda_image=${CUDA_IMAGE}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -55,10 +54,9 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.cuda.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image_tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
           build-args: |
-            CUDA_MAJ=${{ steps.cuda.outputs.maj }}
-            CUDA_MIN=${{ steps.cuda.outputs.min }}
+            CUDA_IMAGE=${{ steps.meta.outputs.cuda_image }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
