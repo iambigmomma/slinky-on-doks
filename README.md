@@ -90,12 +90,27 @@ The Makefile derives the correct taint key (`nvidia.com/gpu` or `amd.com/gpu`) a
 
 If you already have a DOKS cluster provisioned via the DO console or API, you can skip cluster creation and let Terraform provision only the Managed MySQL and Managed NFS dependencies.
 
-### What you need from the DO console
+### Get your Cluster ID and VPC ID
 
-| Value | Where to find it |
-|-------|-----------------|
-| Cluster ID | Manage → Kubernetes → click cluster → ID shown in the Overview tab |
-| VPC ID | Networking → VPC → click the VPC → ID shown in the Overview tab |
+Run this one command — it prints both IDs at once:
+
+```bash
+doctl kubernetes cluster get <your-cluster-name> -o json | python3 -c "
+import json,sys
+d=json.loads(sys.stdin.read())
+if isinstance(d,list): d=d[0]
+print('cluster_id:', d['id'])
+print('vpc_id:', d['vpc_uuid'])
+"
+```
+
+Example output:
+```
+cluster_id: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+vpc_id:     yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+```
+
+> Don't know your cluster name? Run `doctl kubernetes cluster list`.
 
 ### Setup
 
