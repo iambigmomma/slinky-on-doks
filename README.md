@@ -255,7 +255,7 @@ Install Multus CNI and fabric NetworkAttachmentDefinitions for RoCE (RDMA over C
 make fabric/install
 ```
 
-Each GPU node has 8 fabric NICs (`fabric0`–`fabric7`). Multus attaches these into worker pods for GPU-to-GPU communication across nodes.
+Each B300 GPU node has 16 fabric NICs (`fabric0`–`fabric15`, two per GPU). Multus attaches these into worker pods for GPU-to-GPU communication across nodes.
 
 ### 6. Slurm Operator
 

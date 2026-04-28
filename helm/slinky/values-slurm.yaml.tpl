@@ -91,6 +91,14 @@ nodesets:
           rdma/fabric5: 1
           rdma/fabric6: 1
           rdma/fabric7: 1
+          rdma/fabric8: 1
+          rdma/fabric9: 1
+          rdma/fabric10: 1
+          rdma/fabric11: 1
+          rdma/fabric12: 1
+          rdma/fabric13: 1
+          rdma/fabric14: 1
+          rdma/fabric15: 1
         limits:
           __GPU_VENDOR__.com/gpu: 8
           rdma/fabric0: 1
@@ -101,6 +109,19 @@ nodesets:
           rdma/fabric5: 1
           rdma/fabric6: 1
           rdma/fabric7: 1
+          rdma/fabric8: 1
+          rdma/fabric9: 1
+          rdma/fabric10: 1
+          rdma/fabric11: 1
+          rdma/fabric12: 1
+          rdma/fabric13: 1
+          rdma/fabric14: 1
+          rdma/fabric15: 1
+      securityContext:
+        privileged: true
+        capabilities:
+          add:
+            - IPC_LOCK
       volumeMounts:
         - name: shared-nfs
           mountPath: /shared
@@ -122,7 +143,15 @@ nodesets:
           roce-net-fabric4@fabric4,
           roce-net-fabric5@fabric5,
           roce-net-fabric6@fabric6,
-          roce-net-fabric7@fabric7
+          roce-net-fabric7@fabric7,
+          roce-net-fabric8@fabric8,
+          roce-net-fabric9@fabric9,
+          roce-net-fabric10@fabric10,
+          roce-net-fabric11@fabric11,
+          roce-net-fabric12@fabric12,
+          roce-net-fabric13@fabric13,
+          roce-net-fabric14@fabric14,
+          roce-net-fabric15@fabric15
     podSpec:
       nodeSelector:
         doks.digitalocean.com/gpu-brand: __GPU_VENDOR__

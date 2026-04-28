@@ -314,7 +314,7 @@ slurm/info: ## Run sinfo, squeue, and show partitions
 .PHONY: slurm/test-fabric
 slurm/test-fabric: ## Verify fabric NICs and RDMA devices on GPU workers
 	@echo "=== Fabric NICs ==="
-	kubectl exec -n slurm sts/slurm-worker-slinky -c slurmd -- ip link show | grep -E 'fabric[0-7]' || echo "No fabric interfaces found"
+	kubectl exec -n slurm sts/slurm-worker-slinky -c slurmd -- ip link show | grep -E 'fabric[0-9]|fabric1[0-5]' || echo "No fabric interfaces found"
 	@echo ""
 	@echo "=== RDMA Devices ==="
 	kubectl exec -n slurm sts/slurm-worker-slinky -c slurmd -- ibv_devices 2>/dev/null || echo "ibv_devices not available"
