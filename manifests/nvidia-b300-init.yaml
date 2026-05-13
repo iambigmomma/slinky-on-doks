@@ -1,0 +1,86 @@
+# ConnectX-8 firmware re-init DaemonSet for B300 GPU nodes.
+#
+# In VM environments (DOKS = KVM/QEMU), ConnectX-8 firmware may not fully
+# initialize on boot. The NVIDIA driver falls back to a 40× slower sync path
+# (cudaStreamSynchronize > 50% of CUDA API time).
+#
+# This DaemonSet runs on every B300 GPU node, chroots into the host, runs
+# `mst gpu add` + `resourcedump dump -d $dev -s 0x5024` on each NIC device,
+# writes a sentinel file at /var/run/cx8-fix.done, and sleeps forever.
+# A reboot wipes the sentinel — so the fix re-applies automatically.
+#
+# References:
+#   - docs/b300-troubleshooting-guide.md §2
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-b300-cx8-init
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: nvidia-b300-cx8-init
+    app.kubernetes.io/component: gpu-init
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nvidia-b300-cx8-init
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nvidia-b300-cx8-init
+    spec:
+      hostPID: true
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      containers:
+        - name: cx8-init
+          image: ubuntu:24.04
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              SENTINEL=/host/var/run/cx8-fix.done
+
+              if [ -f "$SENTINEL" ]; then
+                echo "CX-8 fix already applied on $(cat /host/etc/hostname). Sleeping."
+                exec sleep infinity
+              fi
+
+              echo "Applying CX-8 firmware fix on $(cat /host/etc/hostname)..."
+              chroot /host /bin/bash -c '
+                set -euo pipefail
+                if ! command -v mst >/dev/null 2>&1; then
+                  echo "ERROR: mst not found on host — host must have Mellanox tools."
+                  exit 1
+                fi
+                mst gpu add
+                shopt -s nullglob
+                devs=( /dev/mst/netir*_gpu* )
+                if [ ${#devs[@]} -eq 0 ]; then
+                  echo "ERROR: No /dev/mst/netir*_gpu* devices found."
+                  exit 2
+                fi
+                for dev in "${devs[@]}"; do
+                  echo "  resourcedump → $dev"
+                  resourcedump dump -d "$dev" -s 0x5024 > /dev/null 2>&1 || true
+                done
+              '
+              mkdir -p /host/var/run
+              touch "$SENTINEL"
+              echo "Done. Sentinel: $SENTINEL"
+              exec sleep infinity
+          volumeMounts:
+            - name: host-root
+              mountPath: /host
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
