@@ -36,7 +36,7 @@ FROM --platform=linux/amd64 ghcr.io/slinkyproject/slurmd:25.11.5-ubuntu24.04
 
 USER root
 
-# RDMA userspace + networking diagnostics
+# RDMA userspace + networking diagnostics + Python runtime for training
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libibverbs-dev \
         rdma-core \
@@ -45,7 +45,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         iproute2 \
         libopenmpi-dev \
         openmpi-bin \
-    && rm -rf /var/lib/apt/lists/*
+        python3 \
+        python3-pip \
+        python3-venv \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3 /usr/local/bin/python
 
 # Copy NCCL runtime libraries from builder
 COPY --from=builder /usr/lib/x86_64-linux-gnu/libnccl.so* \
@@ -59,5 +64,20 @@ COPY --from=builder /usr/local/bin/all_reduce_perf \
                     /usr/local/bin/reduce_scatter_perf \
                     /usr/local/bin/all_gather_perf \
                     /usr/local/bin/
+
+# PyTorch + nanoGPT training deps (baked in so workers don't pip-install at job start).
+# We pin torch to a cu126-compatible build. sm_103 (B300) is NOT in the build matrix —
+# PTX JIT falls back to generic Blackwell at runtime. BF16 training works fine.
+# See docs/b300-troubleshooting-guide.md §3 for the full sm_103 explanation.
+RUN pip install --no-cache-dir --break-system-packages \
+        --index-url https://download.pytorch.org/whl/cu126 \
+        torch==2.5.1 \
+    && pip install --no-cache-dir --break-system-packages \
+        numpy \
+        tiktoken
+
+# torch.compile + Triton crash on sm_103. Disable inductor by default so users
+# don't have to remember to set it per-job. Job scripts also set this defensively.
+ENV TORCHINDUCTOR_DISABLE=1
 
 ENV LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
