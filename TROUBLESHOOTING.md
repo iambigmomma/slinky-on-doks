@@ -16,6 +16,13 @@ Quick reference. For full explanations and root-cause analysis, see [`docs/b300-
 | 8 | `terraform plan` always shows NFS `performance_tier` change | DO API casing mismatch with Terraform state | [§4 — NFS drift](#4-nfs-terraform-drift) |
 | 9 | `docker run <slurmd-image> python ...` hangs on `sssd / sshd` startup, your command never runs | Image entrypoint is `supervisord` for slurmd in-cluster, not a generic python shell | [§4 — Local testing](#4-local-testing-override-entrypoint) |
 | 10 | Inside `make slurm/shell` running `python prepare_data.py` errors with `ModuleNotFoundError: tiktoken/torch/numpy` or `pip3: command not found` | Login pod uses upstream `slinkyproject/login` image — has no Python stack | [§5 — Login pod has no Python](#5-login-pod-has-no-python-stack) |
+| 11 | `terraform apply` → `invalid version slug` | `k8s_version` in `variables.tf` / `terraform.tfvars` is older than what DOKS still serves | [§6 — terraform infra gotchas](#6-terraform-infra-gotchas) |
+| 12 | `terraform apply` → `region has insufficient capacity for requested cluster for slug: c-4` | Default mgmt_node_size = `c-4` may have zero capacity in your chosen region | [§6 — terraform infra gotchas](#6-terraform-infra-gotchas) |
+| 13 | `terraform apply` → `412 unable to create a cluster of that size in that region` (database) | DO out of capacity for that DB slug at that moment | [§6 — terraform infra gotchas](#6-terraform-infra-gotchas) |
+| 14 | `terraform apply` → `NFS is not currently supported in this region` | Managed NFS exists only in atl1, ric1, ams3 today | [§6 — terraform infra gotchas](#6-terraform-infra-gotchas) |
+| 15 | `terraform apply` → `range/size overlaps with another VPC` or `a VPC with the same name already exists` | A leftover (often default) VPC from previous work blocks the new VPC | [§6 — terraform infra gotchas](#6-terraform-infra-gotchas) |
+| 16 | All slurm pods stuck `ImagePullBackOff` even though the pull secret exists | The `REGISTRY_PASSWORD` env var was empty / garbage when the secret was created (e.g. older `gh` versions without `gh auth token`) | [§6 — terraform infra gotchas](#6-terraform-infra-gotchas) |
+| 17 | `kubectl cp` into the login pod fails with `tar: Cannot change ownership ... Operation not permitted` | NFS share root-squashes — tar's chown rejected. Files often arrive anyway but `kubectl cp` exits non-zero | [§6 — terraform infra gotchas](#6-terraform-infra-gotchas) |
 
 ---
 
@@ -163,6 +170,116 @@ srun --partition=slinky --pty bash -c "python /shared/training/nanogpt/prepare_d
 ```
 
 Do **not** override the login image to slurmd-cuda just to get Python — the upstream login image is intentionally minimal for sshd / SSSD reasons, and slurmd-cuda's supervisord entrypoint (see §4) is not designed for interactive login.
+
+---
+
+## 6. Terraform / infra gotchas
+
+Caught while validating the full deploy flow end-to-end. Each was a real `terraform apply` failure or a silent post-deploy stuck state.
+
+### 6.1 Stale `k8s_version`
+
+DOKS deprecates Kubernetes patch versions every couple of months. The default in `variables.tf` will go stale. If apply returns:
+
+> Error: Error creating Kubernetes cluster: ... invalid version slug
+
+list current slugs and pin one:
+
+```bash
+curl -s -H "Authorization: Bearer $DO_API_TOKEN" \
+  https://api.digitalocean.com/v2/kubernetes/options | jq -r '.options.versions[].slug'
+# → 1.35.1-do.6, 1.34.5-do.6, 1.33.9-do.6
+```
+
+then set in `terraform.tfvars`:
+
+```hcl
+k8s_version = "1.35.1-do.6"
+```
+
+### 6.2 Region capacity for management nodes (`c-4`)
+
+The Terraform default mgmt_node_size is `c-4` (CPU-optimised 4 vCPU / 8 GiB). Some regions have no `c-4` capacity at all and apply fails:
+
+> region has insufficient capacity for requested cluster for slug: c-4
+
+Use the standard equivalent (what DOKS actually serves in most regions):
+
+```hcl
+mgmt_node_size = "s-4vcpu-8gb-intel"
+```
+
+To list droplet slugs available in your region:
+
+```bash
+curl -s -H "Authorization: Bearer $DO_API_TOKEN" https://api.digitalocean.com/v2/regions \
+  | jq -r '.regions[] | select(.slug=="ric1") | .sizes[]'
+```
+
+### 6.3 DB size 412 "unable to create … in that region"
+
+`db-amd-1vcpu-2gb`, `db-s-1vcpu-2gb`, `db-s-2vcpu-4gb`, and even `gd-2vcpu-8gb` returned 412 in ric1 during one validation run. The slug is *listed* as supported but the supply pool is empty at that moment.
+
+Mitigation: bump one tier up (`db-s-2vcpu-4gb` → `db-amd-2vcpu-4gb` → `db-amd-2vcpu-8gb`) and retry. Or wait and retry the same slug — capacity usually returns within hours.
+
+### 6.4 NFS region support
+
+DO managed NFS is currently shipping in **atl1, ric1, ams3** only. Other regions return:
+
+> Error creating Share: ... NFS is not currently supported in this region
+
+ric1 is the right choice for the B300 tutorial (B300 + NFS both live there). If you change region for any reason, confirm NFS support first:
+
+```bash
+# 400 with "minimum size" message = region supports NFS
+# 400 with "not currently supported in this region" = nope
+curl -s -X POST -H "Authorization: Bearer $DO_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"name\":\"probe\",\"region\":\"YOUR_REGION\",\"size_gib\":50,\"performance_tier\":\"high\",\"vpc_id\":\"probe\"}" \
+  https://api.digitalocean.com/v2/nfs
+```
+
+### 6.5 Stale VPCs blocking new ones
+
+DO blocks deletion of:
+- Default VPCs (the one auto-created for each region; you can rename but not delete).
+- VPCs that still have "active Subnets" (DOKS leftovers may linger after `terraform destroy`).
+
+Symptoms on the next `terraform apply`:
+- `range/size overlaps with another VPC network in your account` — your `vpc_cidr` collides with a leftover VPC's CIDR (DO compares across regions).
+- `a VPC with the same name already exists in your account` — VPC names are globally unique in DO.
+
+Mitigations:
+- Pick a `vpc_cidr` clear of every default VPC you have (e.g. `10.130.32.0/20`).
+- Rename leftover VPCs (PATCH `/v2/vpcs/{id}` with a new `name`) to free the `slinky-poc-vpc` namespace.
+- Active-subnet VPCs eventually clean themselves up; wait or open a DO ticket.
+
+### 6.6 `slurmd-pull-secret` containing a garbage password
+
+`make slinky/create-pull-secret` reads `REGISTRY_PASSWORD` from the environment and creates a docker-registry secret without validating the value. If the env var is empty or contains an error string (e.g. older `gh` CLI versions returning `unknown command "token" for "gh auth"` because `gh auth token` was added in newer releases), every slurm pod ends up in `ImagePullBackOff`.
+
+Diagnose:
+
+```bash
+kubectl get secret slurmd-pull-secret -n slurm -o jsonpath='{.data.\.dockerconfigjson}' \
+  | base64 -d | jq '.auths."ghcr.io".auth' \
+  | tr -d '"' | base64 -d
+# Should print: <user>:<real-PAT>. If you see an error message or empty string, recreate.
+```
+
+Fix: get a valid PAT (read:packages scope is enough; for older `gh` versions, the token lives in `~/.config/gh/hosts.yml` under `oauth_token`), re-export `REGISTRY_PASSWORD`, and:
+
+```bash
+kubectl delete secret slurmd-pull-secret -n slurm
+make slinky/create-pull-secret
+kubectl delete pod -n slurm --all   # force re-pull
+```
+
+### 6.7 `kubectl cp` into the NFS-backed login pod errors on chown
+
+DigitalOcean managed NFS exports with root-squash. When `kubectl cp` (which uses `tar` under the hood) tries to preserve the local uid/gid on the remote, NFS rejects the chown and tar exits 2. The files usually still land, but the make target / your script will report failure and any subsequent commands in the same `&&` chain are skipped.
+
+Use `tar | kubectl exec … tar -xzf - --no-same-owner --no-same-permissions` instead of `kubectl cp` for any path that writes to `/shared`. The `slurm/upload-nanogpt` make target in this repo already does that — copy the pattern if you write your own upload helper.
 
 ---
 
