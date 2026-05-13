@@ -21,9 +21,9 @@ variable "vpc_cidr" {
 # ── Kubernetes ───────────────────────────────────────────────────────────────
 
 variable "k8s_version" {
-  description = "DOKS Kubernetes version slug"
+  description = "DOKS Kubernetes version slug. DO retires older patch versions every few months — if `terraform apply` returns 'invalid version slug', run `doctl kubernetes options versions` (or query GET /v2/kubernetes/options) for currently-valid slugs and override in terraform.tfvars."
   type        = string
-  default     = "1.34.1-do.5"
+  default     = "1.35.1-do.6"
 }
 
 variable "cluster_subnet" {

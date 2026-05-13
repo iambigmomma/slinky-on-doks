@@ -1,3 +1,5 @@
+# ric1 is where B300 is sold. Managed NFS is only available in atl1, ric1, ams3
+# at the moment — if you change region, confirm NFS support first.
 region       = "ric1"
 project_name = "slinky-poc"
 
@@ -11,12 +13,23 @@ gpu_node_size = "gpu-b300x8-2304gb-fabric-contracted"
 # mgmt_node_count = 3
 
 # ── Kubernetes ────────────────────────────────────────────────────────────────
-# k8s_version    = "1.35.1-do.3"
+# k8s_version goes stale every few months. If apply returns "invalid version slug",
+# query `doctl kubernetes options versions` (or GET /v2/kubernetes/options) and
+# pin a current slug here.
+# k8s_version    = "1.35.1-do.6"
+#
+# vpc_cidr cannot overlap with any existing VPC in your account — including the
+# default VPC of every region you've ever used. Pick something far away if
+# you've previously run terraform here.
 # cluster_subnet = "10.156.0.0/16"
 # service_subnet = "10.157.0.0/16"
 # vpc_cidr       = "10.100.32.0/20"
 
 # ── Database ──────────────────────────────────────────────────────────────────
+# Small DB slugs (db-amd-1vcpu-2gb, db-s-1vcpu-2gb) occasionally return 412
+# "unable to create a cluster of that size in that region" — DO is out of
+# capacity for that exact slug at that moment. Bump one tier (db-s-2vcpu-4gb
+# or db-amd-2vcpu-4gb) and retry.
 # db_size              = "db-amd-1vcpu-2gb"
 # db_node_count        = 1
 # db_name              = "slurm_acct"
