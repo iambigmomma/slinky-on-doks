@@ -47,6 +47,8 @@ helm/slinky/.gres-conf-line
 
 # Local dev / OS junk
 .DS_Store
+__pycache__/
+*.pyc
 
 # Kubeconfigs may contain cluster API credentials — never commit
 *-kubeconfig.yaml
