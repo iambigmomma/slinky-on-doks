@@ -319,6 +319,19 @@ slurm/test-fabric: ## Verify fabric NICs and RDMA devices on GPU workers
 	@echo "=== RDMA Devices ==="
 	kubectl exec -n slurm sts/slurm-worker-slinky -c slurmd -- ibv_devices 2>/dev/null || echo "ibv_devices not available"
 
+.PHONY: slurm/upload-nanogpt
+slurm/upload-nanogpt: ## Upload nanoGPT training code + sbatch jobs to /shared NFS via login pod
+	@POD=$$(kubectl get pod -n slurm -l app.kubernetes.io/name=login -o jsonpath='{.items[0].metadata.name}') && \
+	if [ -z "$$POD" ]; then echo "ERROR: no login pod found"; exit 1; fi && \
+	echo "Uploading to $$POD …" && \
+	kubectl exec -n slurm $$POD -c login -- mkdir -p /shared/training /shared/jobs && \
+	kubectl cp training/nanogpt slurm/$$POD:/shared/training/nanogpt -c login && \
+	kubectl cp jobs/train-nanogpt.sh slurm/$$POD:/shared/jobs/train-nanogpt.sh -c login && \
+	kubectl cp jobs/train-nanogpt-multinode.sh slurm/$$POD:/shared/jobs/train-nanogpt-multinode.sh -c login && \
+	kubectl cp jobs/generate-nanogpt.sh slurm/$$POD:/shared/jobs/generate-nanogpt.sh -c login && \
+	kubectl exec -n slurm $$POD -c login -- chmod +x /shared/jobs/train-nanogpt.sh /shared/jobs/train-nanogpt-multinode.sh /shared/jobs/generate-nanogpt.sh && \
+	echo "Done. Code at /shared/training/nanogpt and /shared/jobs/."
+
 .PHONY: slurm/submit-test
 slurm/submit-test: ## Copy job scripts to NFS and submit basic test jobs
 	scripts/submit-test-jobs.sh
