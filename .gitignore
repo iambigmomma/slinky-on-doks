@@ -50,6 +50,9 @@ helm/slinky/.gres-conf-line
 __pycache__/
 *.pyc
 
+# Claude Code local session state
+.claude/
+
 # Kubeconfigs may contain cluster API credentials — never commit
 *-kubeconfig.yaml
 *.kubeconfig
