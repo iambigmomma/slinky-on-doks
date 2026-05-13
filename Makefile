@@ -325,11 +325,16 @@ slurm/upload-nanogpt: ## Upload nanoGPT training code + sbatch jobs to /shared N
 	if [ -z "$$POD" ]; then echo "ERROR: no login pod found"; exit 1; fi && \
 	echo "Uploading to $$POD …" && \
 	kubectl exec -n slurm $$POD -c login -- mkdir -p /shared/training /shared/jobs && \
-	kubectl cp training/nanogpt slurm/$$POD:/shared/training/nanogpt -c login && \
-	kubectl cp jobs/train-nanogpt.sh slurm/$$POD:/shared/jobs/train-nanogpt.sh -c login && \
-	kubectl cp jobs/train-nanogpt-multinode.sh slurm/$$POD:/shared/jobs/train-nanogpt-multinode.sh -c login && \
-	kubectl cp jobs/generate-nanogpt.sh slurm/$$POD:/shared/jobs/generate-nanogpt.sh -c login && \
-	kubectl exec -n slurm $$POD -c login -- chmod +x /shared/jobs/train-nanogpt.sh /shared/jobs/train-nanogpt-multinode.sh /shared/jobs/generate-nanogpt.sh && \
+	tar -czf - \
+	    --exclude='__pycache__' --exclude='*.pyc' \
+	    training/nanogpt \
+	    jobs/train-nanogpt.sh jobs/train-nanogpt-multinode.sh jobs/generate-nanogpt.sh \
+	  | kubectl exec -i -n slurm $$POD -c login -- \
+	    tar -xzf - --no-same-owner --no-same-permissions -C /shared && \
+	kubectl exec -n slurm $$POD -c login -- chmod +x \
+	    /shared/jobs/train-nanogpt.sh \
+	    /shared/jobs/train-nanogpt-multinode.sh \
+	    /shared/jobs/generate-nanogpt.sh && \
 	echo "Done. Code at /shared/training/nanogpt and /shared/jobs/."
 
 .PHONY: slurm/submit-test
