@@ -15,6 +15,7 @@ Quick reference. For full explanations and root-cause analysis, see [`docs/b300-
 | 7 | Helm chart pulls slurmd image but tag `25.11-ubuntu24.04` returns 404 | Chart default refers to nonexistent tag | [§4 — Override tag](#4-helm-chart-image-tag) |
 | 8 | `terraform plan` always shows NFS `performance_tier` change | DO API casing mismatch with Terraform state | [§4 — NFS drift](#4-nfs-terraform-drift) |
 | 9 | `docker run <slurmd-image> python ...` hangs on `sssd / sshd` startup, your command never runs | Image entrypoint is `supervisord` for slurmd in-cluster, not a generic python shell | [§4 — Local testing](#4-local-testing-override-entrypoint) |
+| 10 | Inside `make slurm/shell` running `python prepare_data.py` errors with `ModuleNotFoundError: tiktoken/torch/numpy` or `pip3: command not found` | Login pod uses upstream `slinkyproject/login` image — has no Python stack | [§5 — Login pod has no Python](#5-login-pod-has-no-python-stack) |
 
 ---
 
@@ -128,6 +129,40 @@ resource "digitalocean_managed_nfs" "shared" {
   }
 }
 ```
+
+---
+
+## 5. Login pod has no Python stack
+
+The `slurm-login` pod ships with the upstream `ghcr.io/slinkyproject/login:25.11.5-ubuntu24.04` image, which is just a Slurm submit host: `srun`, `sbatch`, `squeue`, `scontrol`, SSH, SSSD. It does **not** include Python with `torch` / `tiktoken` / `numpy`, and it does **not** have `pip`.
+
+That means commands like the following — if you've seen them in older docs — will fail inside `make slurm/shell`:
+
+```bash
+python /shared/training/nanogpt/prepare_data.py   # ModuleNotFoundError: tiktoken
+pip3 install tiktoken                             # pip3: command not found
+```
+
+The training code that needs `torch` / `tiktoken` / `numpy` (`prepare_data.py`, `train.py`, `generate.py`) is intended to run on a **slurmd worker** — the slurmd-cuda image baked in this repo bundles all three.
+
+How to ship code and data correctly:
+
+```bash
+# 1. Upload code from your laptop to /shared NFS (kubectl cp via the login pod)
+make slurm/upload-nanogpt
+
+# 2. Submit — the sbatch script auto-runs prepare_data.py on the worker if
+#    /shared/data/shakespeare/train.bin is missing
+sbatch /shared/jobs/train-nanogpt.sh
+```
+
+If you need to run arbitrary Python interactively against `/shared`, do it from a worker via `srun`:
+
+```bash
+srun --partition=slinky --pty bash -c "python /shared/training/nanogpt/prepare_data.py"
+```
+
+Do **not** override the login image to slurmd-cuda just to get Python — the upstream login image is intentionally minimal for sshd / SSSD reasons, and slurmd-cuda's supervisord entrypoint (see §4) is not designed for interactive login.
 
 ---
 
