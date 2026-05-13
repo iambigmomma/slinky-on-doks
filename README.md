@@ -204,19 +204,15 @@ If bandwidth is below 100 GB/s or you see `NET/Socket`, see [`TROUBLESHOOTING.md
 
 Now that the cluster is validated, let's train something real — a 25M-parameter GPT on Shakespeare's complete works. Based on [Andrej Karpathy's nanoGPT](https://github.com/karpathy/nanoGPT).
 
-**Stage the code and data:**
+**Stage the code on /shared NFS:**
 
 ```bash
-make slurm/shell    # enter the login pod
-mkdir -p /shared/training /shared/jobs
-cp -r /repo/training/nanogpt /shared/training/
-cp /repo/jobs/train-nanogpt*.sh /repo/jobs/generate-nanogpt.sh /shared/jobs/
-
-# Download + tokenize Shakespeare (one-time, ~10 seconds)
-python /shared/training/nanogpt/prepare_data.py
+make slurm/upload-nanogpt    # kubectl cp training/ + jobs/ into the login pod's /shared mount
 ```
 
-> **Tip**: the simplest way to ship `training/` and `jobs/` to NFS is from the login pod, since the login pod has `/shared` mounted. `kubectl cp` also works.
+> **Why a Make target instead of `cp` from inside the login pod?** The login pod uses the upstream `slinkyproject/login` image, which does **not** ship Python / torch / tiktoken / numpy and does **not** mount your local repo. Code lives on your workstation; the login pod sees it via NFS once it's been `kubectl cp`'d in.
+
+> **Data prep** (download + tokenize Shakespeare) runs automatically inside `train-nanogpt.sh` the first time you submit — `prepare_data.py` needs `tiktoken`+`numpy`, which only exist in the slurmd-cuda worker image. Adds ~10 sec to the first job.
 
 **Submit the single-node training job:**
 
