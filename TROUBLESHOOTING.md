@@ -14,6 +14,7 @@ Quick reference. For full explanations and root-cause analysis, see [`docs/b300-
 | 6 | Worker pods stuck in `ImagePullBackOff` with 403 from ghcr.io | DC IPs blocked without auth | [§4 — GHCR PAT pull secret](#4-ghcr-403) |
 | 7 | Helm chart pulls slurmd image but tag `25.11-ubuntu24.04` returns 404 | Chart default refers to nonexistent tag | [§4 — Override tag](#4-helm-chart-image-tag) |
 | 8 | `terraform plan` always shows NFS `performance_tier` change | DO API casing mismatch with Terraform state | [§4 — NFS drift](#4-nfs-terraform-drift) |
+| 9 | `docker run <slurmd-image> python ...` hangs on `sssd / sshd` startup, your command never runs | Image entrypoint is `supervisord` for slurmd in-cluster, not a generic python shell | [§4 — Local testing](#4-local-testing-override-entrypoint) |
 
 ---
 
@@ -91,6 +92,29 @@ controller:
 # (same for accounting.slurmdbd, loginsets.slinky.login, restapi.slurmrestd)
 ```
 Already done in `helm/slinky/values-slurm.yaml.tpl`.
+
+### 4. Local testing — override entrypoint
+
+The slurmd-cuda image's default entrypoint is `supervisord`, which boots `slurmd`, `sshd`, and `sssd` so the container can join a Slurm cluster. Running it with a plain `docker run … python script.py` will silently append your command to slurmd's argv and your script never executes.
+
+For ad-hoc local testing (e.g. verifying `torch`/`tiktoken` import, or running the nanoGPT smoke test on CPU before submitting to Slurm), bypass supervisord with `--entrypoint`:
+
+```bash
+# Quick import check
+docker run --rm --entrypoint python3 \
+  ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.8 \
+  -c "import torch, tiktoken, numpy; print(torch.__version__)"
+
+# Full CPU smoke test of the training code
+docker run --rm -v "$(pwd):/repo" -w /repo --entrypoint bash \
+  ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.8 \
+  -c 'python3 training/nanogpt/prepare_data.py --out_dir /tmp/sh && \
+      python3 training/nanogpt/train.py --data_dir /tmp/sh \
+        --checkpoint_dir /tmp/ckpt --device cpu --max_steps 5 \
+        --batch_size 4 --dtype float32'
+```
+
+Inside the Slurm job (`jobs/train-nanogpt.sh`) you don't need to override anything — the slurmd worker is already initialised, and srun launches your command in the right context.
 
 ### 4. NFS Terraform drift
 
