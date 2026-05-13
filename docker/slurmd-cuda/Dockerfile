@@ -71,7 +71,7 @@ COPY --from=builder /usr/local/bin/all_reduce_perf \
 # See docs/b300-troubleshooting-guide.md §3 for the full sm_103 explanation.
 RUN pip install --no-cache-dir --break-system-packages \
         --index-url https://download.pytorch.org/whl/cu126 \
-        torch==2.5.1 \
+        torch==2.8.0 \
     && pip install --no-cache-dir --break-system-packages \
         numpy \
         tiktoken

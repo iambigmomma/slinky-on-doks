@@ -72,7 +72,7 @@ If you want to evaluate this for your real training workload, **bring your model
 
 You'll need a `slurmd-cuda` image with NCCL + PyTorch + nanoGPT deps baked in. The Dockerfile is at [`docker/slurmd-cuda/Dockerfile`](docker/slurmd-cuda/Dockerfile). You can:
 
-- **Use a pre-built image** at `ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.5` (recommended for first run)
+- **Use a pre-built image** at `ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.8` (recommended for first run)
 - **Build your own** — trigger [`.github/workflows/build-slurmd-cuda.yml`](.github/workflows) or `make docker/build-slurmd-cuda`
 
 Either way, you'll need a GHCR personal access token for the image pull secret.
@@ -82,7 +82,7 @@ Either way, you'll need a GHCR personal access token for the image pull secret.
 | Variable | Required | Description |
 |---|---|---|
 | `DIGITALOCEAN_TOKEN` | Yes | DO API token (or `DO_API_TOKEN`) |
-| `SLURMD_IMAGE` | Yes | e.g. `ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.5` |
+| `SLURMD_IMAGE` | Yes | e.g. `ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.8` |
 | `REGISTRY_USER` | Yes | GHCR username |
 | `REGISTRY_PASSWORD` | Yes | GHCR PAT (read:packages scope is enough) |
 
@@ -150,7 +150,7 @@ Details: [`docs/b300-troubleshooting-guide.md` §2](docs/b300-troubleshooting-gu
 ### Step 5 — Deploy Slinky (Slurm-on-Kubernetes)
 
 ```bash
-export SLURMD_IMAGE=ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.5
+export SLURMD_IMAGE=ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.8
 export REGISTRY_USER=your-github-user
 export REGISTRY_PASSWORD=your-ghcr-pat
 
