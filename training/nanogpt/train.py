@@ -304,7 +304,8 @@ def main():
         optimizer.zero_grad(set_to_none=True)
 
         # Logging
-        if master and step % args.log_interval == 0:
+        last_step = (step == args.max_steps - 1)
+        if master and (step % args.log_interval == 0 or last_step):
             dt = time.time() - t0
             tokens_per_sec = args.batch_size * args.block_size * world_size * (step + 1) / dt
             print(f"step {step:5d} | loss {loss.item():.4f} | lr {lr:.2e} | {tokens_per_sec:,.0f} tok/s")
@@ -335,6 +336,19 @@ def main():
                 "config": vars(args),
             }, ckpt_path)
             print(f"  ── checkpoint → {ckpt_path}")
+
+    # ── Save final checkpoint if best.pt was never written ──
+    if master:
+        best_ckpt = os.path.join(args.checkpoint_dir, "best.pt")
+        if not os.path.exists(best_ckpt):
+            torch.save({
+                "model": raw_model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "step": args.max_steps - 1,
+                "val_loss": best_val_loss,
+                "config": vars(args),
+            }, best_ckpt)
+            print(f"  ── saved final checkpoint → {best_ckpt}")
 
     # ── Final ──
     total_time = time.time() - t0
