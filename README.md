@@ -1,435 +1,365 @@
-# Slinky on DOKS — Multi-Node GPU Training
+# Multi-Node B300 GPU Training on DigitalOcean Kubernetes with Slinky
 
-Automated deployment of [Slinky](https://github.com/SlinkyProject/slurm-operator) (Slurm on Kubernetes) on DigitalOcean DOKS, from infrastructure provisioning through running multi-node GPU collective benchmarks over an RDMA fabric.
+End-to-end tutorial: provision a 2-node NVIDIA B300 cluster on DigitalOcean Kubernetes (DOKS), validate **800+ GB/s** NCCL all-reduce bandwidth across 16 GPUs, then train a GPT language model on Shakespeare and generate text from it — **15 minutes from clone to first generated token, after infrastructure is up**.
 
-Supports both **NVIDIA** (NCCL / CUDA) and **AMD** (RCCL / ROCm) GPU nodes.
+**Author**: Jeff Fan, Solutions Architect, EMEA — DigitalOcean
+**Branch**: `feat/nvidia-b300-poc` (this fork) | **Upstream**: [`DO-Solutions/slinky-on-doks`](https://github.com/DO-Solutions/slinky-on-doks)
 
-> **Prefer manual steps?** See the [Manual Install Guide](MANUAL-INSTALL-GUIDE.md) for step-by-step kubectl/helm commands with explanations.
+> **Need B300 capacity, hands-on help, or a paid POC?** Contact your DigitalOcean account team or `sales@digitalocean.com`. See [Talk to DO](#talk-to-do) at the bottom.
 
-> **Support disclaimer**: DigitalOcean does not provide direct support for Slinky or Slurm. These instructions are offered as guidance only. While the underlying DigitalOcean services (DOKS, Managed NFS, DBaaS) are fully supported, issues related to Slinky, Slurm, or their configuration are outside the scope of DigitalOcean support.
+---
 
-## Architecture
+## What you'll build
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    DOKS Cluster (VPC)                       │
-│                                                             │
-│  ┌─────────────────────┐    ┌────────────────────────────┐  │
-│  │    mgmt pool (CPU)  │    │     gpu pool (GPU)         │  │
-│  │                     │    │  (auto-tainted by DOKS)    │  │
-│  │  slurmctld          │    │                            │  │
-│  │  slurmdbd           │    │  slurm-worker-slinky-0     │  │
-│  │  slurmrestd         │    │  slurm-worker-slinky-1     │  │
-│  │  login node         │    │  ...                       │  │
-│  │  slurm-operator     │    │                            │  │
-│  │  cert-manager       │    │                            │  │
-│  │  prometheus/grafana │    │                            │  │
-│  └─────────┬───────────┘    └────────────────────────────┘  │
-│            │                                                │
-│  ┌─────────┴───────────┐    ┌────────────────────────────┐  │
-│  │   Managed MySQL     │    │     Managed NFS            │  │
-│  │   (accounting)      │    │     (/shared)              │  │
-│  └─────────────────────┘    └────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                       DOKS cluster (single VPC)                      │
+│                                                                      │
+│  mgmt pool (CPU)            gpu pool (2× B300, 16 GPUs total)        │
+│  ──────────────────         ──────────────────────────────────       │
+│  slurmctld                  slurm-worker-slinky-0                    │
+│  slurmdbd                   slurm-worker-slinky-1                    │
+│  slurm-operator             (each: 8× B300, 16× RoCE NICs)           │
+│  login pod                                                           │
+│                                                                      │
+│  Managed MySQL  ──► slurmdbd accounting                              │
+│  Managed NFS    ──► /shared (data + checkpoints + logs)              │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-DOKS automatically applies taints to GPU node pools, so non-GPU workloads (operator, monitoring, Slurm control plane) naturally schedule on the mgmt nodes without explicit `nodeSelector` rules.
+Slinky runs Slurm inside Kubernetes pods. Your ML team uses familiar `sbatch` / `squeue` / `sinfo`. The cluster underneath is managed DOKS — control-plane upgrades, GPU node pools, taints, all handled.
+
+By the end you'll have:
+
+1. A working 2-node B300 cluster with 16-NIC RoCE fabric
+2. NCCL all-reduce benchmark confirming 800+ GB/s bus bandwidth
+3. A 25M-parameter GPT trained on Shakespeare (~5 min wall time)
+4. Generated Shakespeare-style text from the trained model
+5. Multi-node tokens/sec comparison demonstrating ~1.7-1.8× scaling
+
+---
+
+## Why B300 on DigitalOcean
+
+| | What you get |
+|---|---|
+| **Hardware** | NVIDIA B300 SXM6 AC — 8 GPUs per node, **275 GB HBM3e per GPU** (25% larger than B200), 16 ConnectX-8 NICs for RoCE fabric |
+| **Region** | `ric1` (Richmond) — current B300 availability |
+| **Managed everything** | DOKS control plane, MySQL (accounting), NFS (`/shared`) — SLA-backed, not "a pod we hope doesn't crash" |
+| **Pricing model** | Flat per-hour. No egress charges. No GPU-hour surge pricing. Reserved contracts available. |
+| **Familiar tooling** | Standard Kubernetes + Slurm. No proprietary scheduler, no vendor-locked control plane. |
+
+If you want to evaluate this for your real training workload, **bring your model — we'll bring the B300s and an SA**. Skip to [Talk to DO](#talk-to-do).
+
+---
 
 ## Prerequisites
 
-### CLI Tools
+### CLI tools
 
-- [doctl](https://docs.digitalocean.com/reference/doctl/) configured with your API token
-- [Terraform](https://www.terraform.io/) >= 1.5
-- [Helm](https://helm.sh/) >= 3.12
-- [kubectl](https://kubernetes.io/docs/tasks/tools/)
-- [Docker](https://docs.docker.com/get-docker/) (only if building the custom slurmd image locally)
+- [`doctl`](https://docs.digitalocean.com/reference/doctl/) authenticated (`doctl auth init`)
+- [Terraform](https://www.terraform.io/) ≥ 1.5
+- [Helm](https://helm.sh/) ≥ 3.12
+- [`kubectl`](https://kubernetes.io/docs/tasks/tools/)
+- [Docker](https://docs.docker.com/get-docker/) — only if you want to rebuild the slurmd image locally
 
-### DigitalOcean Account
+### DigitalOcean account
 
+- B300 capacity in `ric1` — request via your DO account team (contracted capacity)
 - GPU Droplet access enabled (request via support if needed)
-- `doctl` authenticated (`doctl auth init`)
 
-### Container Registry
+### Container registry
 
-GPU workers run a custom slurmd image that includes the GPU communication libraries and benchmark binaries. Push this image to a registry accessible by DOKS (e.g., `ghcr.io`).
+You'll need a `slurmd-cuda` image with NCCL + PyTorch + nanoGPT deps baked in. The Dockerfile is at [`docker/slurmd-cuda/Dockerfile`](docker/slurmd-cuda/Dockerfile). You can:
 
-> **DOKS image size limits**: Layers > 5GB or total image size > 20GB are not supported until Q2 2026. Both `slurmd-cuda` and `slurmd-rocm` images are designed to stay within these limits.
+- **Use a pre-built image** at `ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.5` (recommended for first run)
+- **Build your own** — trigger [`.github/workflows/build-slurmd-cuda.yml`](.github/workflows) or `make docker/build-slurmd-cuda`
 
-### Environment Variables
+Either way, you'll need a GHCR personal access token for the image pull secret.
+
+### Environment variables
 
 | Variable | Required | Description |
-|----------|----------|-------------|
-| `DIGITALOCEAN_TOKEN` | Yes | DigitalOcean API token (used by Terraform) |
-| `SLURMD_IMAGE` | Yes | Full image reference, e.g. `ghcr.io/your-org/slurmd-cuda:25.11-cuda12.6` |
-| `REGISTRY_USER` | Yes | Registry username for image pull secret |
-| `REGISTRY_PASSWORD` | Yes | Registry password/token for image pull secret |
+|---|---|---|
+| `DIGITALOCEAN_TOKEN` | Yes | DO API token (or `DO_API_TOKEN`) |
+| `SLURMD_IMAGE` | Yes | e.g. `ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.5` |
+| `REGISTRY_USER` | Yes | GHCR username |
+| `REGISTRY_PASSWORD` | Yes | GHCR PAT (read:packages scope is enough) |
 
-## Configuration
+---
 
-### Terraform Variables
+## Tutorial
 
-```bash
-cp terraform/terraform.tfvars.example terraform/terraform.tfvars
-# Edit terraform.tfvars — set region, GPU vendor, node size/count
-```
-
-### GPU Vendor
-
-Set `gpu_vendor` in `terraform.tfvars` to match your GPU hardware:
-
-| GPU Family | `gpu_vendor` | `gpu_node_size` | Region |
-|------------|-------------|-----------------|--------|
-| NVIDIA B300 (8x) | `nvidia` | `gpu-b300x8-2304gb-fabric-contracted` | `ric1` |
-| NVIDIA H100 (8x) | `nvidia` | `gpu-h100x8-640gb` | `atl1` |
-| AMD MI300X (8x) | `amd` | `gpu-mi300x8-1920gb` | `atl1` |
-
-The Makefile derives the correct taint key (`nvidia.com/gpu` or `amd.com/gpu`) and node selector label automatically from this value.
-
-## Bring Your Own Cluster
-
-If you already have a DOKS cluster provisioned via the DO console or API, you can skip cluster creation and let Terraform provision only the Managed MySQL and Managed NFS dependencies.
-
-### Get your Cluster ID and VPC ID
-
-Run this one command — it prints both IDs at once:
+### Step 1 — Configure Terraform
 
 ```bash
-doctl kubernetes cluster get <your-cluster-name> -o json | python3 -c "
-import json,sys
-d=json.loads(sys.stdin.read())
-if isinstance(d,list): d=d[0]
-print('cluster_id:', d['id'])
-print('vpc_id:', d['vpc_uuid'])
-"
+cp terraform/terraform.tfvars.b300.example terraform/terraform.tfvars
+# Edit if needed — defaults are 2× B300 nodes in ric1, ready to apply.
 ```
 
-Example output:
-```
-cluster_id: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-vpc_id:     yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
-```
+**Already have a DOKS cluster?** See [Bring Your Own Cluster](#bring-your-own-cluster) below — uncomment `existing_cluster_id` and `existing_vpc_id` so Terraform only creates MySQL + NFS.
 
-> Don't know your cluster name? Run `doctl kubernetes cluster list`.
-
-### Setup
-
-**1. Configure tfvars with your existing IDs**
-
-```hcl
-# terraform/terraform.tfvars
-region       = "ric1"          # must match your cluster's region
-project_name = "slinky-poc"
-gpu_vendor   = "nvidia"
-
-existing_cluster_id = "abc-1234-..."   # your cluster ID
-existing_vpc_id     = "def-5678-..."   # your VPC ID
-```
-
-**2. Provision MySQL and NFS**
+### Step 2 — Provision infrastructure
 
 ```bash
 make infra/init
-make infra/apply   # creates only MySQL + NFS, cluster is untouched
-```
-
-**3. Get kubeconfig**
-
-```bash
-make infra/kubeconfig   # auto-detects external cluster and uses doctl
-```
-
-**4. Deploy Slinky**
-
-```bash
-export SLURMD_IMAGE=ghcr.io/your-org/slurmd-cuda:25.11-cuda12.6
-export REGISTRY_USER=your-registry-user
-export REGISTRY_PASSWORD=your-registry-token
-make up-from-existing
-```
-
-`make up-from-existing` is identical to `make up` but skips the infrastructure provisioning step — it assumes your cluster is already running and kubeconfig is configured.
-
-> **Note**: `DO_API_TOKEN` is accepted as an alias for `DIGITALOCEAN_TOKEN` — either env var works.
-
-## Custom slurmd Image
-
-GPU workers require a custom slurmd image because the upstream Slinky image does not include GPU communication libraries or benchmark binaries.
-
-### NVIDIA (CUDA / NCCL)
-
-The `slurmd-cuda` image includes:
-- NCCL runtime libraries (from `nvidia/cuda:12.6.3-devel-ubuntu24.04`)
-- Compiled `all_reduce_perf`, `reduce_scatter_perf`, `all_gather_perf` binaries
-- RDMA userspace tools (`libibverbs`, `rdma-core`, `perftest`)
-- OpenMPI
-
-**Build via GitHub Actions** (recommended):
-
-Trigger the `Build slurmd-cuda` workflow from your repository's Actions tab, or push to a branch that matches the workflow trigger. The image is pushed to `ghcr.io/<your-org>/slurmd-cuda:25.11-cuda12.6`.
-
-**Build locally**:
-
-```bash
-export SLURMD_IMAGE=ghcr.io/your-org/slurmd-cuda:25.11-cuda12.6
-make docker/build-slurmd-cuda
-make docker/push-slurmd
-```
-
-See [docker/slurmd-cuda/Dockerfile](docker/slurmd-cuda/Dockerfile) for build details.
-
-### AMD (ROCm / RCCL)
-
-The `slurmd-rocm` image includes ROCm runtime libraries, RCCL, and compiled benchmark binaries.
-
-```bash
-export SLURMD_IMAGE=ghcr.io/your-org/slurmd-rocm:25.11
-make docker/build-slurmd
-make docker/push-slurmd
-```
-
-See [docker/slurmd-rocm/README.md](docker/slurmd-rocm/README.md) for build details.
-
-## Quick Start
-
-```bash
-# 1. Set your slurmd image
-export SLURMD_IMAGE=ghcr.io/your-org/slurmd-cuda:25.11-cuda12.6   # NVIDIA
-# export SLURMD_IMAGE=ghcr.io/your-org/slurmd-rocm:25.11           # AMD
-
-# 2. Deploy everything (infra, kubeconfig, prereqs, NFS, fabric, operator, Slurm)
-make up
-
-# 3. Discover GPUs and update Slurm config
-make gpu/discover-gres
-make slinky/update-slurm
-
-# 4. Verify
-make status
-make slurm/shell   # interactive login node shell
-```
-
-## Step-by-Step Guide
-
-### 1. Infrastructure
-
-Provision DOKS cluster, managed MySQL, managed NFS, and VPC:
-
-```bash
 make infra/apply
+make infra/kubeconfig    # writes ~/.kube/config
 ```
 
-> **Already have a cluster?** See the [Bring Your Own Cluster](#bring-your-own-cluster) section — set `existing_cluster_id` and `existing_vpc_id` in `terraform.tfvars` and `terraform apply` will only create MySQL and NFS.
+Provisions: DOKS cluster (mgmt + GPU pools), Managed MySQL, Managed NFS, VPC. Takes ~10 minutes.
 
-### 2. Kubeconfig
+### Step 3 — Configure the 16-fabric network
 
-Save the cluster kubeconfig so `kubectl` and `helm` can reach the new cluster:
+B300 has **16 fabric NICs** (2 per GPU × 8 GPUs). This is the single most common B300 deployment bug — most public examples assume 8 NICs (AMD MI325X pattern). With 8 NADs, NCCL falls back to TCP and you get 1–5 GB/s instead of 800+ GB/s.
+
+This repo already configures 16. Install:
 
 ```bash
-make infra/kubeconfig
+make prereqs/install     # cert-manager + Prometheus
+make nfs/configure       # /shared PV/PVC from Terraform outputs
+make fabric/install      # Multus CNI + 16 NetworkAttachmentDefinitions
 ```
 
-> **Note**: `make up` runs this automatically after `infra/apply`.
-
-### 3. Prerequisites
-
-Install cert-manager (required by Slinky operator) and Prometheus/Grafana:
+Verify:
 
 ```bash
-make prereqs/install
+kubectl get net-attach-def -n slurm | grep -c roce-net-fabric
+# Expected: 16
 ```
 
-### 4. Storage
+For why 16 (not 8) and what fails when it's wrong, see [`docs/b300-troubleshooting-guide.md` §1](docs/b300-troubleshooting-guide.md#1-nccl-multi-node-networking-16-fabrics).
 
-Create NFS PV/PVC from Terraform outputs, used as shared storage (`/shared`) across login and worker pods:
+### Step 4 — Apply the CX-8 firmware fix
+
+In VM environments (DOKS = KVM/QEMU), ConnectX-8 firmware sometimes doesn't fully initialize on boot. The NVIDIA driver falls back to a 40× slower sync path. Symptom: `cudaStreamSynchronize > 50%` of CUDA API time.
+
+Apply the fix DaemonSet:
 
 ```bash
-make nfs/configure
+kubectl apply -f manifests/nvidia-b300-init.yaml
+kubectl rollout status daemonset/nvidia-b300-cx8-init -n kube-system
 ```
 
-### 5. RDMA Fabric
+The DaemonSet writes a sentinel at `/var/run/cx8-fix.done` on each GPU node so it only runs once per boot. A reboot wipes the sentinel — the fix re-applies automatically.
 
-Install Multus CNI and fabric NetworkAttachmentDefinitions for RoCE (RDMA over Converged Ethernet):
+> ⚠ **The fix does NOT persist across reboots.** The DaemonSet handles this automatically. If you're applying manually with [`scripts/cx8-fix.sh`](scripts/cx8-fix.sh), you'll need to re-run after every node reboot.
 
-```bash
-make fabric/install
-```
+Details: [`docs/b300-troubleshooting-guide.md` §2](docs/b300-troubleshooting-guide.md#2-cx-8-pcie-switch-firmware-bug).
 
-Each B300 GPU node has 16 fabric NICs (`fabric0`–`fabric15`, two per GPU). Multus attaches these into worker pods for GPU-to-GPU communication across nodes.
-
-### 6. Slurm Operator
-
-Install the Slinky operator with CRDs:
+### Step 5 — Deploy Slinky (Slurm-on-Kubernetes)
 
 ```bash
+export SLURMD_IMAGE=ghcr.io/iambigmomma/slurmd-cuda:25.11-cuda12.6-torch2.5
+export REGISTRY_USER=your-github-user
+export REGISTRY_PASSWORD=your-ghcr-pat
+
 make slinky/install-operator
-```
-
-### 7. Slurm Cluster
-
-Creates the DB secret, image pull secret, generates Helm values, and deploys the Slurm cluster:
-
-```bash
-export SLURMD_IMAGE=ghcr.io/your-org/slurmd-cuda:25.11-cuda12.6   # or your AMD image
-export REGISTRY_USER=your-registry-user
-export REGISTRY_PASSWORD=your-registry-token
 make slinky/install-slurm
 ```
 
-### 8. GPU Discovery
-
-Discover GPU device paths on the GPU nodes and update the Slurm GRes configuration:
+Verify all pods are running:
 
 ```bash
-make gpu/discover-gres
-make slinky/update-slurm
+kubectl get pods -n slurm
 ```
 
-This deploys a probe pod to detect device paths on the GPU node (e.g., `/dev/nvidia[0-7]` for NVIDIA, `/dev/dri/renderD[128,136,...]` for AMD) and saves the result to `gres.conf`.
+[REPLACE WITH ACTUAL B300 OUTPUT — kubectl get pods -n slurm showing controller, accounting, login, 2 workers all Running]
 
-### 9. Validation
+### Step 6 — Validate NCCL bandwidth
 
-```bash
-make slurm/info            # sinfo, squeue, partitions
-make slurm/test-fabric     # verify fabric NICs and RDMA devices
-make status                # full component status
-```
-
-## Running GPU Collective Benchmarks
-
-These benchmarks confirm GPU-to-GPU communication is working correctly over the RDMA fabric.
-
-**Prerequisites**: fabric deployed (`make fabric/install`), workers running, compute nodes idle (`sinfo` shows `idle`).
-
-### NVIDIA — NCCL Tests
-
-#### Single-Node (8 GPUs, intra-node)
+#### Single-node (8 GPUs, intra-node)
 
 ```bash
 make slurm/submit-nccl-1node
+# or directly:
+kubectl exec -it -n slurm deployment/login-slinky -- bash -lc \
+  'cp /shared/jobs/nccl-allreduce-1node.sh /tmp/ && cd /shared && sbatch /tmp/nccl-allreduce-1node.sh'
 ```
 
-Expected: `all_reduce_perf` bandwidth table with **~300–450 GB/s bus bandwidth** across message sizes.
+Wait ~2 minutes. Read the output:
 
-#### Multi-Node (16 GPUs, 2 nodes over RoCE)
+```bash
+make slurm/shell
+cat /shared/output/nccl-allreduce-1node-*.out
+```
+
+Expected: average bus bandwidth **~800 GB/s** intra-node.
+
+[REPLACE WITH ACTUAL B300 OUTPUT — all_reduce_perf bandwidth table for 1-node]
+
+#### Multi-node (16 GPUs, 2 nodes over RoCE)
 
 ```bash
 make slurm/submit-nccl-2node
 ```
 
-Expected: bandwidth table with inter-node throughput and `NCCL_DEBUG` output showing `NET/IB` RoCE transport selected.
+Expected: bandwidth table with **~800–850 GB/s** average bus bandwidth and `NCCL DEBUG=INFO` confirming `NET/IB` RoCE transport (not `NET/Socket`).
 
-### AMD — RCCL Tests
+[REPLACE WITH ACTUAL B300 OUTPUT — 2-node all_reduce_perf table + NCCL INFO showing NET/IB RoCE]
 
-#### Single-Node (8 GPUs, intra-node)
+If bandwidth is below 100 GB/s or you see `NET/Socket`, see [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
 
-```bash
-make slurm/submit-rccl-1node
-```
+### Step 7 — Train your first model
 
-Expected: `all_reduce_perf` bandwidth table with **~110 GB/s average bus bandwidth**.
+Now that the cluster is validated, let's train something real — a 25M-parameter GPT on Shakespeare's complete works. Based on [Andrej Karpathy's nanoGPT](https://github.com/karpathy/nanoGPT).
 
-#### Multi-Node (16 GPUs, 2 nodes over RoCE)
+**Stage the code and data:**
 
 ```bash
-make slurm/submit-rccl-2node
+make slurm/shell    # enter the login pod
+mkdir -p /shared/training /shared/jobs
+cp -r /repo/training/nanogpt /shared/training/
+cp /repo/jobs/train-nanogpt*.sh /repo/jobs/generate-nanogpt.sh /shared/jobs/
+
+# Download + tokenize Shakespeare (one-time, ~10 seconds)
+python /shared/training/nanogpt/prepare_data.py
 ```
 
-Expected: bandwidth table with **~350 GB/s average bus bandwidth** and RoCE transport confirmation.
+> **Tip**: the simplest way to ship `training/` and `jobs/` to NFS is from the login pod, since the login pod has `/shared` mounted. `kubectl cp` also works.
 
-### Reading Output
-
-Job output is written to NFS at `/shared/output/`:
-
-```
-/shared/output/allreduce-1node-<jobid>.out
-/shared/output/allreduce-2node-<jobid>.out
-```
-
-To read results from the login pod:
+**Submit the single-node training job:**
 
 ```bash
-make slurm/shell
-ls /shared/output/
-cat /shared/output/allreduce-1node-*.out
+sbatch /shared/jobs/train-nanogpt.sh
+squeue                                          # job status
+tail -f /shared/output/nanogpt-1node-*.out      # live progress
 ```
 
-## Teardown
+Expected: ~5 min wall time, loss drops from ~10.9 to ~1.5.
+
+[REPLACE WITH ACTUAL B300 OUTPUT — training log showing step / loss / lr / tokens-per-sec, with eval checkpoints]
+
+**Generate text from the trained model:**
 
 ```bash
-make down
+PROMPT="ROMEO: O, " sbatch /shared/jobs/generate-nanogpt.sh
+# Wait ~30 sec for it to schedule + run
+cat /shared/output/nanogpt-generate-*.out
 ```
 
-Tears down in reverse order: Slurm cluster, fabric, prerequisites, infrastructure.
+[REPLACE WITH ACTUAL B300 OUTPUT — generated Shakespeare-style text starting with "ROMEO: O, ..."]
 
-## Make Targets Reference
+### Step 8 — Multi-node scaling
+
+Same model, same data — but now 2 nodes × 8 GPUs = 16 GPUs:
+
+```bash
+sbatch /shared/jobs/train-nanogpt-multinode.sh
+tail -f /shared/output/nanogpt-2node-*.out
+```
+
+Compare `tokens/sec` from the last 100 steps of both runs. Expected scaling: **~1.7–1.8×** (not 2× because of inter-node all-reduce overhead). On B300 with 16 fabric NICs and the CX-8 fix in place, the multi-node penalty is small.
+
+[REPLACE WITH ACTUAL B300 OUTPUT — side-by-side tokens/sec comparison]
+
+If you don't see scaling (or scaling is < 1.3×), it's almost certainly one of:
+- NCCL falling back to TCP (only 8 NADs configured) → [§1](docs/b300-troubleshooting-guide.md#1-nccl-multi-node-networking-16-fabrics)
+- CX-8 firmware not initialized → [§2](docs/b300-troubleshooting-guide.md#2-cx-8-pcie-switch-firmware-bug)
+
+---
+
+## Troubleshooting
+
+Quick reference: [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — symptom → fix table.
+Full guide: [`docs/b300-troubleshooting-guide.md`](docs/b300-troubleshooting-guide.md).
+
+| Symptom | First place to look |
+|---|---|
+| NCCL bandwidth 1–5 GB/s | [§1 — 16 fabric NADs](docs/b300-troubleshooting-guide.md#1-nccl-multi-node-networking-16-fabrics) |
+| Training mysteriously slow | [§2 — CX-8 firmware fix](docs/b300-troubleshooting-guide.md#2-cx-8-pcie-switch-firmware-bug) |
+| `torch.compile` crashes | [§3 — `sm_103` ecosystem gap](docs/b300-troubleshooting-guide.md#3-software-stack--sm_103-kernel-gap) |
+| `ImagePullBackOff` on workers | [§4 — GHCR PAT pull secret](docs/b300-troubleshooting-guide.md#4-container-and-image-issues) |
+| `terraform plan` keeps showing NFS drift | [§4 — `lifecycle ignore_changes`](docs/b300-troubleshooting-guide.md#nfs-terraform-drift) |
+
+---
+
+## Bring Your Own Cluster
+
+If you already have a DOKS cluster with a B300 pool, Terraform can provision **only** the Managed MySQL + Managed NFS and leave your cluster alone.
+
+```bash
+# Find your cluster + VPC IDs in one shot:
+doctl kubernetes cluster get <your-cluster-name> -o json | python3 -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+if isinstance(d, list): d = d[0]
+print('cluster_id:', d['id'])
+print('vpc_id:    ', d['vpc_uuid'])
+"
+```
+
+Set them in `terraform/terraform.tfvars`:
+```hcl
+existing_cluster_id = "abc-1234-..."
+existing_vpc_id     = "def-5678-..."
+```
+
+Then:
+```bash
+make infra/init && make infra/apply    # creates MySQL + NFS only
+make infra/kubeconfig                  # uses doctl to fetch kubeconfig
+make up-from-existing                  # deploys Slinky on top
+```
+
+---
+
+## Repository Layout
 
 ```
-make help
+slinky-on-doks/
+├── README.md                     ← you are here
+├── TROUBLESHOOTING.md            ← quick symptom → fix reference
+├── MANUAL-INSTALL-GUIDE.md       ← step-by-step kubectl/helm (no Makefile)
+├── Makefile                      ← all the `make` targets
+├── docker/slurmd-cuda/           ← custom slurmd image (CUDA + NCCL + PyTorch)
+├── docker/slurmd-rocm/           ← AMD ROCm variant (out of scope for this tutorial)
+├── docs/
+│   ├── architecture.md           ← why this stack is built this way
+│   └── b300-troubleshooting-guide.md   ← full troubleshooting reference
+├── helm/slinky/                  ← Helm values template (16-fabric annotations)
+├── jobs/                         ← sbatch scripts (NCCL benchmarks + nanoGPT)
+├── manifests/
+│   ├── fabric-nads.yaml          ← 16 NetworkAttachmentDefinitions
+│   ├── nvidia-b300-init.yaml     ← CX-8 firmware fix DaemonSet
+│   └── ...
+├── scripts/
+│   ├── cx8-fix.sh                ← manual CX-8 fix (alternative to DaemonSet)
+│   └── ...
+├── terraform/                    ← DOKS + MySQL + NFS provisioning
+│   └── terraform.tfvars.b300.example   ← copy-ready B300 config
+└── training/nanogpt/             ← training code (prepare, train, generate)
 ```
 
-| Target | Description |
-|--------|-------------|
-| **Lifecycle** | |
-| `up` | Full deploy: infra, prereqs, NFS, fabric, operator, Slurm |
-| `up-from-existing` | Deploy Slinky on existing DOKS cluster (run `make infra/import-cluster` first) |
-| `down` | Full teardown |
-| `status` | Show status of all components |
-| **Infrastructure** | |
-| `infra/init` | Initialize Terraform providers and backend |
-| `infra/plan` | Preview Terraform changes |
-| `infra/apply` | Provision DOKS, MySQL, NFS, VPC |
-| `infra/kubeconfig` | Save kubeconfig from Terraform to ~/.kube/config |
-| `infra/import-cluster` | Import existing DOKS cluster into Terraform state (set `CLUSTER_NAME`) |
-| `infra/destroy` | Destroy all infrastructure |
-| `infra/output` | Print all Terraform outputs |
-| **Prerequisites** | |
-| `prereqs/install` | Install cert-manager and Prometheus |
-| `prereqs/status` | Check pod status across prerequisite namespaces |
-| `prereqs/uninstall` | Uninstall all prerequisites |
-| **NFS** | |
-| `nfs/configure` | Generate NFS PV/PVC from Terraform outputs |
-| `nfs/test` | Deploy busybox pod to verify NFS read/write |
-| `nfs/status` | Check PV/PVC binding status |
-| **Docker** | |
-| `docker/build-slurmd` | Build custom slurmd image with ROCm/RCCL (AMD) |
-| `docker/build-slurmd-cuda` | Build custom slurmd image with CUDA/NCCL (NVIDIA) |
-| `docker/push-slurmd` | Push slurmd image to registry |
-| **Fabric** | |
-| `fabric/install` | Install Multus + fabric NADs |
-| `fabric/install-multus` | Install Multus CNI plugin |
-| `fabric/install-nads` | Create fabric NetworkAttachmentDefinitions |
-| `fabric/status` | Check Multus and NAD status |
-| `fabric/uninstall` | Remove fabric NADs and Multus |
-| **GPU** | |
-| `gpu/discover-gres` | Discover GPU device paths and save gres.conf |
-| **Slinky / Slurm** | |
-| `slinky/install-operator` | Install Slinky operator with CRDs |
-| `slinky/configure` | Generate values-slurm.yaml from template |
-| `slinky/install-slurm` | Install Slurm cluster (creates secrets, configures, deploys) |
-| `slinky/update-slurm` | Helm upgrade Slurm with updated values |
-| `slinky/create-db-secret` | Create Slurm DB password secret |
-| `slinky/create-pull-secret` | Create image pull secret |
-| `slinky/status` | Show pods across slinky + slurm namespaces |
-| `slinky/uninstall` | Uninstall Slurm cluster, operator, CRDs |
-| `slinky/logs` | Tail operator and controller logs |
-| **Slurm Operations** | |
-| `slurm/shell` | Interactive shell on the login pod |
-| `slurm/info` | Show sinfo, squeue, partitions |
-| `slurm/test-fabric` | Verify fabric NICs and RDMA devices on workers |
-| `slurm/submit-nccl-1node` | Submit single-node NCCL all-reduce test (NVIDIA) |
-| `slurm/submit-nccl-2node` | Submit multi-node NCCL all-reduce test (NVIDIA) |
-| `slurm/submit-rccl-1node` | Submit single-node RCCL all-reduce test (AMD) |
-| `slurm/submit-rccl-2node` | Submit multi-node RCCL all-reduce test (AMD) |
-| `slurm/submit-test` | Copy job scripts to NFS and submit basic test jobs |
-| `slurm/run-validation` | Run the full validation suite |
-| `slurm/test-restapi` | Test slurmrestd API endpoints |
-| **Observability** | |
-| `obs/dashboard` | Deploy Slurm Grafana dashboard |
-| `obs/grafana` | Port-forward Grafana to localhost:3000 |
-| `obs/prometheus` | Port-forward Prometheus to localhost:9090 |
+For the full list of Make targets, see `make help` or the [Makefile](Makefile).
 
-## Related Documentation
+---
 
-- [docker/slurmd-cuda/Dockerfile](docker/slurmd-cuda/Dockerfile) — NVIDIA CUDA/NCCL image build
-- [docker/slurmd-rocm/README.md](docker/slurmd-rocm/README.md) — AMD ROCm/RCCL image build details
+## What's next
+
+- Larger models (GPT-2 124M + FSDP) — the model class in `training/nanogpt/train.py` is straightforward to extend
+- Hybrid storage (DO Spaces for cold datasets, NFS for hot working set)
+- More than 2 nodes — needs PFC QoS configuration; talk to DO before scaling beyond ~16 B300s
+
+---
+
+## Talk to DO
+
+This tutorial exists so you can evaluate B300 on DigitalOcean against your real workload, fast. If you got this far, you're past the "is the hardware real" question. The next step is:
+
+**Bring your model. We'll bring B300 capacity and a Solutions Architect.**
+
+- Existing DO customer? Talk to your account team — they can fast-track B300 capacity.
+- New to DO? Email `sales@digitalocean.com` and mention "B300 POC, Slinky tutorial" so it routes correctly.
+- For technical questions on this repo specifically, open a GitHub issue or reach out to the author (`Jeff Fan, Solutions Architect, EMEA`).
+
+---
+
+## Credits + support
+
+- This training demo is based on [Andrej Karpathy's nanoGPT](https://github.com/karpathy/nanoGPT).
+- Built on top of [Slinky](https://github.com/SlinkyProject/slurm-operator) (Slurm-on-Kubernetes operator).
+- Upstream slinky-on-doks: [`DO-Solutions/slinky-on-doks`](https://github.com/DO-Solutions/slinky-on-doks).
+- Reference 16-fabric config: [`RithishRamesh-dev/doks-multi-node`](https://github.com/RithishRamesh-dev/doks-multi-node/tree/main/B300).
+
+> **Support disclaimer**: DigitalOcean does not provide direct support for Slinky or Slurm. These instructions are offered as guidance only. The underlying DigitalOcean services (DOKS, Managed NFS, Managed MySQL) are fully supported. Issues with Slinky, Slurm, or their configuration are outside the scope of DigitalOcean support — but we will help you scope them as part of a POC engagement.

@@ -1,0 +1,38 @@
+# Copy-paste ready B300 tfvars for the tutorial.
+#
+#   cp terraform/terraform.tfvars.b300.example terraform/terraform.tfvars
+#   make infra/apply
+#
+# B300 is only available in ric1 today. If you're bringing your own cluster,
+# uncomment the existing_* block at the bottom and leave gpu_node_count = 0
+# (your cluster already has the GPU pool).
+
+region       = "ric1"
+project_name = "slinky-b300-tutorial"
+
+# ── GPU (NVIDIA B300, 2 nodes = 16 GPUs total) ───────────────────────────────
+gpu_vendor     = "nvidia"
+gpu_node_size  = "gpu-b300x8-2304gb-fabric-contracted"
+gpu_node_count = 2
+
+# ── Management Nodes ─────────────────────────────────────────────────────────
+mgmt_node_size  = "s-4vcpu-8gb-intel"
+# mgmt_node_count = 3
+
+# ── Kubernetes ───────────────────────────────────────────────────────────────
+# k8s_version    = "1.35.1-do.3"
+
+# ── Database (Slurm accounting) ──────────────────────────────────────────────
+# db_size = "db-amd-1vcpu-2gb"
+
+# ── NFS (/shared) ────────────────────────────────────────────────────────────
+# nfs_size_gib         = 1024
+# nfs_performance_tier = "high"
+
+# ── Bring-Your-Own-Cluster (optional) ────────────────────────────────────────
+# Already have a DOKS cluster with a B300 pool? Set the IDs here and leave
+# gpu_node_count at the value above (terraform will only create MySQL + NFS,
+# not the cluster).
+#
+# existing_cluster_id = ""   # doctl kubernetes cluster get <name> -o json | jq -r .[0].id
+# existing_vpc_id     = ""   # doctl kubernetes cluster get <name> -o json | jq -r .[0].vpc_uuid
