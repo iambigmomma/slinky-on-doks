@@ -44,3 +44,13 @@ helm/slinky/values-slurm.yaml
 
 # GPU discovery output (machine-specific)
 helm/slinky/.gres-conf-line
+
+# Local dev / OS junk
+.DS_Store
+
+# Kubeconfigs may contain cluster API credentials — never commit
+*-kubeconfig.yaml
+*.kubeconfig
+
+# Authoring source for docs (markdown port lives in docs/)
+*.docx
