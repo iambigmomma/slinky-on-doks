@@ -72,15 +72,22 @@ def main():
     print(f"Generating {args.num_tokens} tokens (temperature={args.temperature}, top_k={args.top_k})...")
     print("─" * 60)
 
+    use_cuda = device.startswith("cuda")
     with torch.no_grad():
-        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+        if use_cuda:
+            ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
+        else:
+            import contextlib
+            ctx = contextlib.nullcontext()
+        with ctx:
             y = model.generate(x, max_new_tokens=args.num_tokens,
                              temperature=args.temperature, top_k=args.top_k)
 
     output = enc.decode(y[0].tolist())
     print(output)
     print("─" * 60)
-    print(f"\nGenerated {args.num_tokens} tokens on {torch.cuda.get_device_name()}")
+    dev_name = torch.cuda.get_device_name() if use_cuda else "CPU"
+    print(f"\nGenerated {args.num_tokens} tokens on {dev_name}")
 
 
 if __name__ == "__main__":
